@@ -1,0 +1,154 @@
+<div id="text-polish-panel" class="polish-panel">
+
+    <!-- ─── 设置区（折叠） ─── -->
+    <div class="inline-drawer">
+        <div class="inline-drawer-toggle inline-drawer-header">
+            <b>⚙ API 设置</b>
+            <div class="inline-drawer-icon fa-solid fa-circle-chevron-down down"></div>
+        </div>
+        <div class="inline-drawer-content">
+            <div class="polish-field-row">
+                <label class="polish-label">API 地址</label>
+                <input id="polish-api-url" type="text" class="text_pole"
+                       placeholder="https://api.anthropic.com" />
+            </div>
+            <div class="polish-field-row">
+                <label class="polish-label">API 密钥</label>
+                <input id="polish-api-key" type="password" class="text_pole"
+                       placeholder="sk-ant-api03-..." autocomplete="off" />
+            </div>
+            <div class="polish-field-row">
+                <label class="polish-label">模型</label>
+                <input id="polish-model" type="text" class="text_pole"
+                       placeholder="claude-sonnet-4-20250514" />
+            </div>
+            <div id="polish-api-status" class="polish-api-status idle">● 未连接</div>
+        </div>
+    </div>
+
+    <!-- ─── 风格选择 ─── -->
+    <div class="polish-section-title">润色风格</div>
+    <div class="polish-style-grid" id="polish-style-grid">
+        <div class="polish-chip active" data-style="literary">
+            <span class="chip-icon">🖋</span>
+            <span class="chip-name">文学叙事</span>
+        </div>
+        <div class="polish-chip" data-style="poetic">
+            <span class="chip-icon">🌙</span>
+            <span class="chip-name">诗意朦胧</span>
+        </div>
+        <div class="polish-chip" data-style="elegant">
+            <span class="chip-icon">🏛</span>
+            <span class="chip-name">古典雅致</span>
+        </div>
+        <div class="polish-chip" data-style="romantic">
+            <span class="chip-icon">🌹</span>
+            <span class="chip-name">浪漫细腻</span>
+        </div>
+        <div class="polish-chip" data-style="dramatic">
+            <span class="chip-icon">⚡</span>
+            <span class="chip-name">戏剧张力</span>
+        </div>
+        <div class="polish-chip" data-style="minimalist">
+            <span class="chip-icon">◻</span>
+            <span class="chip-name">极简冷峻</span>
+        </div>
+        <div class="polish-chip" data-style="fantasy">
+            <span class="chip-icon">✨</span>
+            <span class="chip-name">奇幻绮丽</span>
+        </div>
+        <div class="polish-chip" data-style="dark">
+            <span class="chip-icon">🌑</span>
+            <span class="chip-name">暗黑哥特</span>
+        </div>
+        <div class="polish-chip" data-style="custom">
+            <span class="chip-icon">🎨</span>
+            <span class="chip-name">自定义</span>
+        </div>
+    </div>
+    <div id="polish-custom-style-box" class="polish-custom-box" style="display:none;">
+        <input id="polish-custom-style" type="text" class="text_pole"
+               placeholder="例如：江户时代武士风、赛博朋克…" />
+    </div>
+
+    <!-- ─── 润色强度 ─── -->
+    <div class="polish-section-title">润色强度</div>
+    <div class="polish-intensity-row">
+        <span class="polish-intensity-tip">轻微</span>
+        <input id="polish-intensity" type="range" min="1" max="5" value="3" step="1" />
+        <span class="polish-intensity-tip">重塑</span>
+        <span id="polish-intensity-label" class="polish-intensity-val">均衡</span>
+    </div>
+
+    <!-- ─── 快速预设标签 ─── -->
+    <div class="polish-section-title">快速预设 <span class="polish-hint">（可多选）</span></div>
+    <div class="polish-preset-row" id="polish-preset-row">
+        <div class="polish-preset-tag" data-preset="保留原有人称视角">保留人称视角</div>
+        <div class="polish-preset-tag" data-preset="增加感官细节描写">增加感官细节</div>
+        <div class="polish-preset-tag" data-preset="加强动作节奏感">加强动作节奏</div>
+        <div class="polish-preset-tag" data-preset="深化角色内心独白">深化内心独白</div>
+        <div class="polish-preset-tag" data-preset="使用更多修辞手法">增加修辞手法</div>
+        <div class="polish-preset-tag" data-preset="让结尾更有余韵">结尾有余韵</div>
+        <div class="polish-preset-tag" data-preset="控制在原文长度的1.5倍以内">控制篇幅</div>
+        <div class="polish-preset-tag" data-preset="适合小说正文风格">小说正文风</div>
+    </div>
+
+    <!-- ─── 额外说明 ─── -->
+    <div class="polish-field-row" style="margin-top: 8px;">
+        <input id="polish-extra-note" type="text" class="text_pole"
+               placeholder="其他要求（可选）：例如 不要用感叹号…" />
+    </div>
+
+    <!-- ─── 输入区 ─── -->
+    <div class="polish-section-title">待润色文本</div>
+    <textarea id="polish-input" class="text_pole" rows="5"
+              placeholder="在这里输入待润色的文字，或点击下方按钮从当前消息导入…"></textarea>
+
+    <div class="polish-btn-row">
+        <div id="polish-char-count" class="polish-char-count">0 字</div>
+        <button id="polish-import-btn" class="menu_button" title="导入最新的 AI 消息">
+            导入消息
+        </button>
+        <button id="polish-clear-btn" class="menu_button">清空</button>
+        <button id="polish-run-btn" class="menu_button menu_button_icon" title="开始润色">
+            <i class="fa-solid fa-wand-magic-sparkles"></i> 润色
+        </button>
+    </div>
+
+    <!-- ─── 结果区 ─── -->
+    <div id="polish-result-section" style="display:none;">
+        <div class="polish-result-header">
+            <span class="polish-result-tag">润色结果</span>
+            <div class="polish-result-actions">
+                <button id="polish-compare-btn" class="menu_button">对比</button>
+                <button id="polish-copy-btn" class="menu_button">复制</button>
+                <button id="polish-reuse-btn" class="menu_button">再次润色</button>
+                <button id="polish-insert-btn" class="menu_button" title="插入到输入框">
+                    发送到输入框
+                </button>
+            </div>
+        </div>
+
+        <!-- 普通视图 -->
+        <div id="polish-result-normal">
+            <div id="polish-loading" class="polish-loading" style="display:none;">
+                <span></span><span></span><span></span>
+                <em>AI 润色中…</em>
+            </div>
+            <div id="polish-result-content" class="polish-result-content"></div>
+        </div>
+
+        <!-- 对比视图 -->
+        <div id="polish-result-compare" class="polish-compare-grid" style="display:none;">
+            <div class="polish-compare-pane">
+                <div class="polish-compare-label">原文</div>
+                <div id="polish-orig-text" class="polish-compare-text"></div>
+            </div>
+            <div class="polish-compare-pane">
+                <div class="polish-compare-label">润色后</div>
+                <div id="polish-new-text" class="polish-compare-text new"></div>
+            </div>
+        </div>
+    </div>
+
+</div>

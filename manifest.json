@@ -1,0 +1,12 @@
+{
+    "display_name": "文字润色工坊",
+    "loading_order": 10,
+    "requires": [],
+    "optional": [],
+    "js": "index.js",
+    "css": "style.css",
+    "author": "your-name",
+    "version": "1.0.0",
+    "homePage": "https://github.com/your-username/st-text-polish",
+    "auto_update": true
+}

@@ -1,0 +1,262 @@
+/* ── 文字润色工坊 · SillyTavern Extension Styles ── */
+
+/* 整体面板 */
+.polish-panel {
+    padding: 4px 0 8px;
+    color: var(--SmartThemeBodyColor);
+    font-size: 0.9rem;
+}
+
+/* 分区标题 */
+.polish-section-title {
+    font-size: 0.8rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--SmartThemeQuoteColor);
+    margin: 14px 0 7px;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+.polish-section-title::before {
+    content: '';
+    display: inline-block;
+    width: 3px;
+    height: 12px;
+    background: var(--SmartThemeQuoteColor);
+    border-radius: 2px;
+    flex-shrink: 0;
+}
+.polish-hint {
+    font-size: 0.75rem;
+    font-weight: 400;
+    text-transform: none;
+    letter-spacing: 0;
+    opacity: 0.6;
+}
+
+/* API 状态 */
+.polish-api-status {
+    margin-top: 6px;
+    font-size: 0.78rem;
+    padding: 3px 8px;
+    border-radius: 4px;
+    display: inline-block;
+}
+.polish-api-status.idle { color: var(--SmartThemeBodyColor); opacity: 0.55; }
+.polish-api-status.ok   { color: #6ee7b7; }
+.polish-api-status.err  { color: var(--SmartThemeQuoteColor); }
+
+/* 字段行 */
+.polish-field-row {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    margin-bottom: 8px;
+}
+.polish-label {
+    font-size: 0.8rem;
+    opacity: 0.7;
+}
+.polish-custom-box {
+    margin-top: 6px;
+}
+
+/* 风格芯片网格 */
+.polish-style-grid {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 6px;
+}
+.polish-chip {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 3px;
+    padding: 8px 4px 7px;
+    border-radius: 7px;
+    border: 1px solid var(--SmartThemeBorderColor);
+    background: var(--SmartThemeChatTintColor, transparent);
+    cursor: pointer;
+    transition: all 0.15s;
+    text-align: center;
+    user-select: none;
+}
+.polish-chip:hover {
+    border-color: var(--SmartThemeQuoteColor);
+    opacity: 0.9;
+}
+.polish-chip.active {
+    border-color: var(--SmartThemeQuoteColor);
+    background: color-mix(in srgb, var(--SmartThemeQuoteColor) 12%, transparent);
+}
+.chip-icon { font-size: 1.1rem; line-height: 1; }
+.chip-name { font-size: 0.78rem; font-weight: 500; }
+
+/* 强度滑块 */
+.polish-intensity-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+.polish-intensity-row input[type="range"] {
+    flex: 1;
+    cursor: pointer;
+}
+.polish-intensity-tip {
+    font-size: 0.75rem;
+    opacity: 0.55;
+    white-space: nowrap;
+}
+.polish-intensity-val {
+    font-size: 0.8rem;
+    font-weight: 600;
+    color: var(--SmartThemeQuoteColor);
+    min-width: 52px;
+    text-align: right;
+    white-space: nowrap;
+}
+
+/* 预设标签 */
+.polish-preset-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+}
+.polish-preset-tag {
+    padding: 4px 10px;
+    border-radius: 4px;
+    border: 1px solid var(--SmartThemeBorderColor);
+    font-size: 0.8rem;
+    cursor: pointer;
+    transition: all 0.15s;
+    user-select: none;
+}
+.polish-preset-tag:hover {
+    border-color: var(--SmartThemeQuoteColor);
+    color: var(--SmartThemeQuoteColor);
+}
+.polish-preset-tag.active {
+    border-color: var(--SmartThemeQuoteColor);
+    color: var(--SmartThemeQuoteColor);
+    background: color-mix(in srgb, var(--SmartThemeQuoteColor) 10%, transparent);
+}
+
+/* 按钮行 */
+.polish-btn-row {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    margin-top: 6px;
+    flex-wrap: wrap;
+}
+.polish-char-count {
+    font-size: 0.78rem;
+    opacity: 0.5;
+    flex: 1;
+    min-width: 40px;
+}
+
+/* 结果区标题 */
+.polish-result-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    flex-wrap: wrap;
+    gap: 6px;
+    padding: 8px 0 6px;
+    border-bottom: 1px solid var(--SmartThemeBorderColor);
+    margin-bottom: 8px;
+}
+.polish-result-tag {
+    font-size: 0.8rem;
+    font-weight: 600;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+    color: var(--SmartThemeQuoteColor);
+}
+.polish-result-actions {
+    display: flex;
+    gap: 5px;
+    flex-wrap: wrap;
+}
+
+/* 加载动画 */
+.polish-loading {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    padding: 12px 0 4px;
+    font-size: 0.82rem;
+    opacity: 0.7;
+}
+.polish-loading span {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: var(--SmartThemeQuoteColor);
+    animation: polishBounce 0.8s infinite;
+}
+.polish-loading span:nth-child(2) { animation-delay: 0.15s; }
+.polish-loading span:nth-child(3) { animation-delay: 0.30s; }
+.polish-loading em { margin-left: 4px; font-style: normal; }
+@keyframes polishBounce {
+    0%,100% { transform: translateY(0); opacity: 0.5; }
+    50%      { transform: translateY(-4px); opacity: 1; }
+}
+
+/* 结果文本 */
+.polish-result-content {
+    line-height: 1.85;
+    font-size: 0.92rem;
+    white-space: pre-wrap;
+    padding: 4px 0 8px;
+    min-height: 40px;
+}
+.polish-result-content.streaming::after {
+    content: '▋';
+    color: var(--SmartThemeQuoteColor);
+    animation: polishCaret 0.7s infinite;
+}
+@keyframes polishCaret {
+    0%,100% { opacity: 1; }
+    50%      { opacity: 0; }
+}
+
+/* 对比网格 */
+.polish-compare-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 10px;
+    margin-top: 4px;
+}
+.polish-compare-pane {
+    background: var(--SmartThemeChatTintColor, transparent);
+    border: 1px solid var(--SmartThemeBorderColor);
+    border-radius: 6px;
+    padding: 10px 12px;
+}
+.polish-compare-label {
+    font-size: 0.75rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    opacity: 0.55;
+    margin-bottom: 6px;
+}
+.polish-compare-text {
+    font-size: 0.85rem;
+    line-height: 1.75;
+    white-space: pre-wrap;
+    opacity: 0.7;
+}
+.polish-compare-text.new {
+    opacity: 1;
+}
+
+/* 响应式 */
+@media (max-width: 480px) {
+    .polish-style-grid   { grid-template-columns: repeat(3, 1fr); }
+    .polish-compare-grid { grid-template-columns: 1fr; }
+}
