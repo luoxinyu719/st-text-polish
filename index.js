@@ -435,7 +435,7 @@ jQuery(async () => {
     );
 
     // 挂载到扩展设置面板
-    $('#extensions_settings2').append(panelHtml);
+    $('#extensions_settings').append(panelHtml);
 
     // 绑定事件 & 恢复 UI
     bindPanelEvents();
