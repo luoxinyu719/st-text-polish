@@ -1,14 +1,12 @@
 /**
  * 文字润色工坊 - SillyTavern Extension
- * 支持：连接测试 + 自动拉取模型列表 + 下拉选择模型
+ * 支持：连接验证 + 自动拉取模型列表
  */
-
 (function () {
     'use strict';
 
     const EXT_NAME = 'st-text-polish';
 
-    // ─── 风格 Prompt ─────────────────────────────────────────────────────────
     const stylePrompts = {
         literary:   '文学叙事风格：语言流畅优美，叙述张力强，善用长短句结合，情感与细节并重，如优秀的中文小说正文',
         poetic:     '诗意朦胧风格：语言如诗，多用意象与比喻，留有余白和遐想空间，如散文诗或意识流写作',
@@ -20,7 +18,6 @@
         dark:       '暗黑哥特风格：基调深沉阴郁，充满隐喻和象征，神秘压抑中透露美感，如哥特文学或心理惊悚',
         custom:     '',
     };
-
     const intensityDesc = {
         1: '尽量保留原文，只做微小词句优化',
         2: '轻度改写，保留原意和结构，优化表达',
@@ -30,7 +27,6 @@
     };
     const intensityLabel = { 1: '极轻微', 2: '轻度', 3: '均衡', 4: '深度', 5: '大幅重写' };
 
-    // ─── 默认设置 ─────────────────────────────────────────────────────────────
     const defaultSettings = {
         apiUrl: 'https://api.anthropic.com',
         apiKey: '',
@@ -47,7 +43,7 @@
     let isStreaming = false;
     let compareOn = false;
 
-    // ─── 面板 HTML ────────────────────────────────────────────────────────────
+    // ─── 面板 HTML ───────────────────────────────────────────────────────────
     const PANEL_HTML = `
 <div id="polish-panel-wrap" class="polish-panel">
 
@@ -66,24 +62,22 @@
       <label class="polish-label" style="margin-top:8px;">API 密钥</label>
       <div style="display:flex;gap:6px;align-items:center;">
         <input id="polish-api-key" type="password" class="text_pole"
-               placeholder="sk-ant-api03-..." autocomplete="off"
-               style="flex:1;" />
-        <button id="polish-connect-btn" class="menu_button" style="white-space:nowrap;">
+               placeholder="sk-ant-api03-…" autocomplete="off" style="flex:1;" />
+        <button id="polish-connect-btn" class="menu_button" style="white-space:nowrap;flex-shrink:0;">
           连接
         </button>
       </div>
 
-      <!-- 状态栏 -->
+      <!-- 状态行 -->
       <div id="polish-api-status" class="polish-api-status idle" style="margin-top:6px;">
         ● 未连接
       </div>
 
-      <!-- 模型选择区，连接成功后出现 -->
-      <div id="polish-model-section" style="display:none;margin-top:10px;">
+      <!-- 模型选择（连接成功后显示） -->
+      <div id="polish-model-row" style="display:none;margin-top:10px;">
         <label class="polish-label">选择模型</label>
-        <select id="polish-model-select" class="text_pole" style="width:100%;margin-top:4px;">
-          <option value="">-- 加载中… --</option>
-        </select>
+        <select id="polish-model-select" class="text_pole" style="width:100%;margin-top:4px;"></select>
+        <div id="polish-model-hint" style="font-size:0.75rem;opacity:0.5;margin-top:4px;"></div>
       </div>
 
     </div>
@@ -175,107 +169,111 @@
 
 </div>`;
 
-    // ─── 检测接口类型 ─────────────────────────────────────────────────────────
-    function isAnthropicUrl(url) {
-        return (url || '').includes('anthropic.com');
-    }
-
-    // ─── 获取模型列表 ─────────────────────────────────────────────────────────
-    async function fetchModels(url, key) {
-        url = (url || '').replace(/\/$/, '');
-        const isAnthropic = isAnthropicUrl(url);
-        const endpoint = isAnthropic
-            ? `${url}/v1/models`
-            : `${url}/v1/models`;
-
-        const headers = { 'Content-Type': 'application/json' };
-        if (isAnthropic) {
-            headers['x-api-key'] = key;
-            headers['anthropic-version'] = '2023-06-01';
-        } else {
-            headers['Authorization'] = 'Bearer ' + key;
-        }
-
-        const res = await fetch(endpoint, { method: 'GET', headers });
-        if (!res.ok) {
-            const err = await res.json().catch(() => ({}));
-            throw new Error(err.error?.message || 'HTTP ' + res.status);
-        }
-        const data = await res.json();
-
-        // 兼容 Anthropic 格式 { data: [{id, display_name}] }
-        // 和 OpenAI 格式 { data: [{id}] }
-        const list = data.data || data.models || [];
-        return list.map(m => ({
-            id: m.id,
-            name: m.display_name || m.name || m.id,
-        }));
-    }
-
-    // ─── 连接并加载模型 ───────────────────────────────────────────────────────
-    async function connectAndLoadModels() {
+    // ─── 连接并拉取模型列表 ──────────────────────────────────────────────────
+    async function connectAndFetchModels() {
         const urlEl = document.getElementById('polish-api-url');
         const keyEl = document.getElementById('polish-api-key');
-        const connectBtn = document.getElementById('polish-connect-btn');
         const statusEl = document.getElementById('polish-api-status');
-        const modelSection = document.getElementById('polish-model-section');
+        const modelRow = document.getElementById('polish-model-row');
         const modelSelect = document.getElementById('polish-model-select');
+        const modelHint = document.getElementById('polish-model-hint');
+        const connectBtn = document.getElementById('polish-connect-btn');
 
-        const url = urlEl ? urlEl.value.trim() : '';
-        const key = keyEl ? keyEl.value.trim() : '';
+        const url = (urlEl?.value || '').trim().replace(/\/$/, '');
+        const key = (keyEl?.value || '').trim();
 
         if (!url) { toastr.warning('请填写 API 地址'); return; }
-        if (!key) { toastr.warning('请填写 API 密钥'); return; }
+        if (!key)  { toastr.warning('请填写 API 密钥'); return; }
 
-        // 保存输入
         settings.apiUrl = url;
         settings.apiKey = key;
         saveSettings();
 
-        // UI：连接中
+        // 连接中状态
         if (connectBtn) { connectBtn.disabled = true; connectBtn.textContent = '连接中…'; }
         setApiStatus('connecting');
+        if (modelRow) modelRow.style.display = 'none';
+
+        const isAnthropic = url.includes('anthropic.com');
 
         try {
-            const models = await fetchModels(url, key);
+            let models = [];
 
-            if (!models || models.length === 0) {
-                throw new Error('未获取到可用模型，请检查 API 地址和密钥');
+            if (isAnthropic) {
+                // Anthropic：用 /v1/models 接口
+                const resp = await fetch(`${url}/v1/models`, {
+                    headers: {
+                        'x-api-key': key,
+                        'anthropic-version': '2023-06-01',
+                    }
+                });
+                if (!resp.ok) {
+                    const e = await resp.json().catch(() => ({}));
+                    throw new Error(e.error?.message || 'HTTP ' + resp.status);
+                }
+                const data = await resp.json();
+                // Anthropic 返回 { data: [ {id, display_name, ...} ] }
+                models = (data.data || []).map(m => ({
+                    id: m.id,
+                    name: m.display_name || m.id,
+                }));
+            } else {
+                // OpenAI 兼容：用 /v1/models 接口
+                const resp = await fetch(`${url}/v1/models`, {
+                    headers: { 'Authorization': 'Bearer ' + key }
+                });
+                if (!resp.ok) {
+                    const e = await resp.json().catch(() => ({}));
+                    throw new Error(e.error?.message || 'HTTP ' + resp.status);
+                }
+                const data = await resp.json();
+                // OpenAI 返回 { data: [ {id, ...} ] }
+                models = (data.data || []).map(m => ({ id: m.id, name: m.id }));
+                // 优先展示对话类模型
+                models.sort((a, b) => {
+                    const priority = (id) => {
+                        if (id.includes('gpt-4') || id.includes('claude') || id.includes('deepseek')) return 0;
+                        if (id.includes('gpt-3')) return 1;
+                        return 2;
+                    };
+                    return priority(a.id) - priority(b.id);
+                });
             }
+
+            if (models.length === 0) throw new Error('未获取到任何模型');
 
             // 填充下拉框
             modelSelect.innerHTML = '';
             models.forEach(m => {
                 const opt = document.createElement('option');
                 opt.value = m.id;
-                opt.textContent = m.name !== m.id ? `${m.name}  (${m.id})` : m.id;
+                opt.textContent = m.name;
+                if (m.id === settings.model) opt.selected = true;
                 modelSelect.appendChild(opt);
             });
 
-            // 恢复上次选择的模型
-            if (settings.model && models.find(m => m.id === settings.model)) {
-                modelSelect.value = settings.model;
-            } else {
-                // 默认选第一个
+            // 如果之前没有保存的模型，默认选第一个
+            if (!settings.model || !models.find(m => m.id === settings.model)) {
+                modelSelect.value = models[0].id;
                 settings.model = models[0].id;
-                modelSelect.value = settings.model;
                 saveSettings();
             }
 
-            modelSection.style.display = 'block';
+            modelRow.style.display = 'block';
+            if (modelHint) modelHint.textContent = `共 ${models.length} 个可用模型`;
             setApiStatus('ok');
             toastr.success(`连接成功，获取到 ${models.length} 个模型`);
 
         } catch (err) {
-            modelSection.style.display = 'none';
             setApiStatus('err');
+            if (modelRow) modelRow.style.display = 'none';
             toastr.error('连接失败：' + err.message);
         }
 
         if (connectBtn) { connectBtn.disabled = false; connectBtn.textContent = '连接'; }
     }
 
-    // ─── 构建 Prompt ──────────────────────────────────────────────────────────
+    // ─── 构建 Prompt ─────────────────────────────────────────────────────────
     function buildPrompt(inputText) {
         const styleDesc = settings.style === 'custom'
             ? (settings.customStyle || '优美流畅的文学风格')
@@ -283,8 +281,7 @@
         const presetsStr = selectedPresets.size > 0
             ? '\n额外要求：' + [...selectedPresets].join('、') : '';
         const noteEl = document.getElementById('polish-extra-note');
-        const noteStr = (noteEl && noteEl.value.trim()) ? '\n特别说明：' + noteEl.value.trim() : '';
-
+        const noteStr = noteEl?.value ? '\n特别说明：' + noteEl.value : '';
         return `你是一位专业的中文写作润色专家，擅长文学创作和语言美化。
 
 请按照以下要求对文本进行润色：
@@ -303,14 +300,13 @@
 ${inputText}`;
     }
 
-    // ─── 调用 API（流式） ─────────────────────────────────────────────────────
+    // ─── 调用 API（流式） ────────────────────────────────────────────────────
     async function callApi(prompt) {
         const url = (settings.apiUrl || '').replace(/\/$/, '');
         const key = settings.apiKey;
         const model = settings.model;
-        const isAnthropic = isAnthropicUrl(url);
+        const isAnthropic = url.includes('anthropic.com');
         const endpoint = isAnthropic ? `${url}/v1/messages` : `${url}/v1/chat/completions`;
-
         const headers = { 'Content-Type': 'application/json' };
         if (isAnthropic) {
             headers['x-api-key'] = key;
@@ -318,21 +314,22 @@ ${inputText}`;
         } else {
             headers['Authorization'] = 'Bearer ' + key;
         }
-
         const body = isAnthropic
             ? { model, max_tokens: 2048, stream: true, messages: [{ role: 'user', content: prompt }] }
-            : { model, stream: true, messages: [{ role: 'system', content: '你是一位专业的中文写作润色专家。' }, { role: 'user', content: prompt }] };
-
+            : { model, stream: true, messages: [
+                { role: 'system', content: '你是一位专业的中文写作润色专家。' },
+                { role: 'user', content: prompt }
+              ]};
         return fetch(endpoint, { method: 'POST', headers, body: JSON.stringify(body) });
     }
 
-    // ─── 润色主流程 ───────────────────────────────────────────────────────────
+    // ─── 润色主流程 ──────────────────────────────────────────────────────────
     async function startPolish() {
         const inputEl = document.getElementById('polish-input');
-        const inputText = inputEl ? inputEl.value.trim() : '';
+        const inputText = inputEl?.value?.trim();
         if (!inputText) { toastr.warning('请输入要润色的文字'); return; }
         if (!settings.apiKey) { toastr.warning('请先连接 API'); return; }
-        if (!settings.model) { toastr.warning('请先选择模型'); return; }
+        if (!settings.model) { toastr.warning('请先连接 API 并选择模型'); return; }
         if (isStreaming) return;
 
         isStreaming = true;
@@ -352,27 +349,24 @@ ${inputText}`;
         resultSection.style.display = 'block';
         loading.style.display = 'flex';
         resultContent.textContent = '';
-        resultContent.style.color = '';
         resultContent.classList.remove('streaming');
         compareGrid.style.display = 'none';
         normalView.style.display = 'block';
         if (compareBtn) compareBtn.textContent = '对比';
 
         try {
-            const isAnthropic = isAnthropicUrl(settings.apiUrl);
+            const isAnthropic = (settings.apiUrl || '').includes('anthropic.com');
             const response = await callApi(buildPrompt(inputText));
             if (!response.ok) {
-                const err = await response.json().catch(() => ({}));
-                throw new Error(err.error?.message || 'HTTP ' + response.status);
+                const e = await response.json().catch(() => ({}));
+                throw new Error(e.error?.message || 'HTTP ' + response.status);
             }
-
             loading.style.display = 'none';
             resultContent.classList.add('streaming');
 
             const reader = response.body.getReader();
             const decoder = new TextDecoder();
             let buffer = '';
-
             while (true) {
                 const { done, value } = await reader.read();
                 if (done) break;
@@ -395,33 +389,30 @@ ${inputText}`;
                     } catch (e) { /* 忽略不完整 JSON */ }
                 }
             }
-
             resultContent.classList.remove('streaming');
             toastr.success('润色完成！');
-
         } catch (err) {
             loading.style.display = 'none';
             resultContent.classList.remove('streaming');
-            resultContent.style.color = '#e74c3c';
             resultContent.textContent = '❌ 错误：' + err.message;
             toastr.error('润色失败：' + err.message);
         }
 
         isStreaming = false;
-        if (runBtn) runBtn.disabled = false;
+        if (runBtn) { runBtn.disabled = false; }
     }
 
     // ─── 工具函数 ─────────────────────────────────────────────────────────────
     function setApiStatus(state) {
         const el = document.getElementById('polish-api-status');
         if (!el) return;
-        el.className = 'polish-api-status ' + state;
         const map = {
-            ok: '● 连接正常',
-            err: '● 连接失败',
-            idle: '● 未连接',
+            ok:         '● 已连接',
+            err:        '● 连接失败',
+            idle:       '● 未连接',
             connecting: '● 连接中…',
         };
+        el.className = 'polish-api-status ' + state;
         el.textContent = map[state] || '● 未连接';
     }
 
@@ -435,7 +426,7 @@ ${inputText}`;
         try {
             const ctx = SillyTavern.getContext();
             const chat = ctx.chat;
-            if (!chat || !chat.length) { toastr.warning('当前没有聊天消息'); return; }
+            if (!chat?.length) { toastr.warning('当前没有聊天消息'); return; }
             for (let i = chat.length - 1; i >= 0; i--) {
                 if (!chat[i].is_user && chat[i].mes) {
                     const tmp = document.createElement('div');
@@ -486,26 +477,27 @@ ${inputText}`;
         }
     }
 
-    // ─── 绑定事件 ─────────────────────────────────────────────────────────────
+    // ─── 绑定事件 ────────────────────────────────────────────────────────────
     function bindEvents() {
         // 连接按钮
-        document.getElementById('polish-connect-btn')?.addEventListener('click', connectAndLoadModels);
+        document.getElementById('polish-connect-btn')
+            ?.addEventListener('click', connectAndFetchModels);
 
-        // 回车也触发连接
-        document.getElementById('polish-api-key')?.addEventListener('keydown', function (e) {
-            if (e.key === 'Enter') connectAndLoadModels();
-        });
+        // URL / Key 输入时只保存，不自动连接
+        document.getElementById('polish-api-url')
+            ?.addEventListener('change', function () { settings.apiUrl = this.value.trim(); saveSettings(); });
+        document.getElementById('polish-api-key')
+            ?.addEventListener('change', function () { settings.apiKey = this.value.trim(); saveSettings(); });
 
-        // 模型选择
-        document.getElementById('polish-model-select')?.addEventListener('change', function () {
-            settings.model = this.value;
-            saveSettings();
-        });
+        // 模型下拉
+        document.getElementById('polish-model-select')
+            ?.addEventListener('change', function () { settings.model = this.value; saveSettings(); });
 
         // 风格芯片
         document.querySelectorAll('#polish-panel-wrap .polish-chip').forEach(chip => {
             chip.addEventListener('click', function () {
-                document.querySelectorAll('#polish-panel-wrap .polish-chip').forEach(c => c.classList.remove('active'));
+                document.querySelectorAll('#polish-panel-wrap .polish-chip')
+                    .forEach(c => c.classList.remove('active'));
                 this.classList.add('active');
                 settings.style = this.dataset.style;
                 const box = document.getElementById('polish-custom-style-box');
@@ -513,19 +505,17 @@ ${inputText}`;
                 saveSettings();
             });
         });
-
-        // 自定义风格
-        document.getElementById('polish-custom-style')?.addEventListener('input', function () {
-            settings.customStyle = this.value; saveSettings();
-        });
+        document.getElementById('polish-custom-style')
+            ?.addEventListener('input', function () { settings.customStyle = this.value; saveSettings(); });
 
         // 强度滑块
-        document.getElementById('polish-intensity')?.addEventListener('input', function () {
-            settings.intensity = parseInt(this.value);
-            const lbl = document.getElementById('polish-intensity-label');
-            if (lbl) lbl.textContent = intensityLabel[settings.intensity] || '均衡';
-            saveSettings();
-        });
+        document.getElementById('polish-intensity')
+            ?.addEventListener('input', function () {
+                settings.intensity = parseInt(this.value);
+                const lbl = document.getElementById('polish-intensity-label');
+                if (lbl) lbl.textContent = intensityLabel[settings.intensity] || '均衡';
+                saveSettings();
+            });
 
         // 预设标签
         document.querySelectorAll('#polish-panel-wrap .polish-preset-tag').forEach(tag => {
@@ -536,10 +526,7 @@ ${inputText}`;
             });
         });
 
-        // 输入框字数
         document.getElementById('polish-input')?.addEventListener('input', updateCharCount);
-
-        // 操作按钮
         document.getElementById('polish-run-btn')?.addEventListener('click', startPolish);
         document.getElementById('polish-import-btn')?.addEventListener('click', importLastMessage);
         document.getElementById('polish-clear-btn')?.addEventListener('click', () => {
@@ -566,17 +553,11 @@ ${inputText}`;
         document.getElementById('polish-insert-btn')?.addEventListener('click', insertToInputBox);
     }
 
-    // ─── 恢复已保存设置到 UI ──────────────────────────────────────────────────
+    // ─── 恢复已保存的设置到 UI ───────────────────────────────────────────────
     function restoreUI() {
-        const urlEl = document.getElementById('polish-api-url');
-        const keyEl = document.getElementById('polish-api-key');
-        if (urlEl) urlEl.value = settings.apiUrl || '';
-        if (keyEl) keyEl.value = settings.apiKey || '';
-
-        // 如果已有保存的 key，自动重连加载模型
-        if (settings.apiUrl && settings.apiKey) {
-            connectAndLoadModels();
-        }
+        const f = (id, val) => { const el = document.getElementById(id); if (el) el.value = val || ''; };
+        f('polish-api-url', settings.apiUrl);
+        f('polish-api-key', settings.apiKey);
 
         const intEl = document.getElementById('polish-intensity');
         if (intEl) intEl.value = settings.intensity || 3;
@@ -588,9 +569,16 @@ ${inputText}`;
         });
         const box = document.getElementById('polish-custom-style-box');
         if (box) box.style.display = settings.style === 'custom' ? 'block' : 'none';
+
+        // 如果之前已有连接信息，自动重新连接拉取模型
+        if (settings.apiKey && settings.apiUrl) {
+            connectAndFetchModels();
+        } else {
+            setApiStatus('idle');
+        }
     }
 
-    // ─── 初始化 ───────────────────────────────────────────────────────────────
+    // ─── 初始化 ──────────────────────────────────────────────────────────────
     function init() {
         if (typeof extension_settings !== 'undefined') {
             if (!extension_settings[EXT_NAME]) extension_settings[EXT_NAME] = Object.assign({}, defaultSettings);
@@ -609,9 +597,7 @@ ${inputText}`;
                     <b>文字润色工坊</b>
                     <div class="inline-drawer-icon fa-solid fa-circle-chevron-down down"></div>
                   </div>
-                  <div class="inline-drawer-content">
-                    ${PANEL_HTML}
-                  </div>
+                  <div class="inline-drawer-content">${PANEL_HTML}</div>
                 </div>`;
                 container.appendChild(wrapper);
                 injected = true;
@@ -620,8 +606,8 @@ ${inputText}`;
         }
 
         if (!injected) {
-            console.warn('[文字润色工坊] 找不到扩展容器，延迟重试…');
-            setTimeout(init, 1500);
+            console.warn('[文字润色工坊] 找不到容器，500ms 后重试…');
+            setTimeout(init, 500);
             return;
         }
 
@@ -631,11 +617,9 @@ ${inputText}`;
     }
 
     if (document.readyState === 'loading') {
-        document.addEventListener('DOMContentLoaded', init);
+        document.addEventListener('DOMContentLoaded', () => setTimeout(init, 500));
     } else {
         setTimeout(init, 500);
     }
 
 })();
-JSEOF
-echo "done"
