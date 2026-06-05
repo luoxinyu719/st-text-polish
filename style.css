@@ -479,3 +479,33 @@
     .tp-result-actions { gap: 4px; }
     .tp-result-actions .tp-btn { padding: 4px 8px; font-size: 0.76rem; }
 }
+
+
+/* v2.3: history item styles */
+.tp-history-item {
+    border: 1px solid var(--SmartThemeBorderColor, rgba(255,255,255,0.1));
+    border-radius: 8px;
+    padding: 10px 12px;
+    margin-bottom: 8px;
+    cursor: pointer;
+    transition: background 0.15s;
+}
+.tp-history-item:last-child { margin-bottom: 0; }
+.tp-history-item:hover { background: rgba(255,255,255,0.05); }
+.tp-history-meta {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    flex-wrap: wrap;
+    margin-bottom: 6px;
+}
+.tp-history-time { font-size: 0.76rem; opacity: 0.55; flex-shrink: 0; }
+.tp-history-preview {
+    font-size: 0.82rem;
+    opacity: 0.75;
+    line-height: 1.5;
+    overflow: hidden;
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+}
