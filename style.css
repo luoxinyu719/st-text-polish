@@ -1,5 +1,5 @@
 /* ══════════════════════════════════════════════
-   文字润色工坊 · SillyTavern Extension v2.1
+   文字润色工坊 · SillyTavern Extension v2.2
    ══════════════════════════════════════════════ */
 
 /* ── 弹窗整体包装 ── */
@@ -187,6 +187,7 @@
 .tp-api-status.connecting { color: #f0ad4e; border-color: rgba(240,173,78,0.5); }
 .tp-api-status.ok         { color: #5cb85c; border-color: rgba(92,184,92,0.5); }
 .tp-api-status.err        { color: #e74c3c; border-color: rgba(231,76,60,0.5); }
+.tp-api-status.manual     { color: #f0ad4e; border-color: rgba(240,173,78,0.5); }
 
 /* ── 风格芯片 ── */
 .tp-style-grid {

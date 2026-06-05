@@ -1,8 +1,15 @@
 /**
- * 文字润色工坊 v2.1 — SillyTavern Extension
- * 修复：颜色未还原、Diff点击判断、错误挂载目标、重复弹窗、
- *       流式中按钮未禁用、AbortController、每次重连、DOM耦合、
- *       _esc安全、强度配置合并、contenteditable读取
+ * 文字润色工坊 v2.2 — SillyTavern Extension
+ * 
+ * v2.2 变更：
+ * - 新增 API 类型选择器（OpenAI 兼容 / Anthropic 原生），适配中转 API
+ * - 新增手动输入模型名功能，解决中转 API 无 /v1/models 端点问题
+ * - 新增常用模型快速选择
+ * - 新增 max_tokens 和 temperature 控制
+ * - OpenAI 兼容请求默认携带 max_tokens
+ * - 改进 URL 自动清理与端点拼接逻辑
+ * - 改进模型获取失败时的降级处理
+ * - 修复之前版本所有已知问题
  */
 (function () {
     'use strict';
@@ -10,7 +17,7 @@
     const EXT_NAME    = 'st-text-polish';
     const WAND_BTN_ID = 'tp-wand-btn';
 
-    // ── 强度配置（合并 label + desc，修复 #12）────────────────────────────
+    // ── 强度配置 ──────────────────────────────────────────────────────────
     const INTENSITY = {
         1: { label: '极轻微', desc: '尽量保留原文，只做微小词句优化' },
         2: { label: '轻度',   desc: '轻度改写，保留原意和结构，优化表达' },
@@ -19,7 +26,7 @@
         5: { label: '大幅重写', desc: '完全重塑，以原文意思为基础彻底重写成高质量文本' },
     };
 
-    // ── 风格 Prompt ──────────────────────────────────────────────────────────
+    // ── 风格 Prompt ──────────────────────────────────────────────────────
     const STYLE_PROMPTS = {
         literary:   '文学叙事风格：语言流畅优美，叙述张力强，善用长短句结合，情感与细节并重，如优秀的中文小说正文',
         poetic:     '诗意朦胧风格：语言如诗，多用意象与比喻，留有余白和遐想空间，如散文诗或意识流写作',
@@ -32,30 +39,42 @@
         custom:     '',
     };
 
-    // ── 默认设置 ─────────────────────────────────────────────────────────────
+    // ── 常用模型预设 ─────────────────────────────────────────────────────
+    const POPULAR_MODELS = [
+        { group: 'Claude', models: ['claude-sonnet-4-20250514', 'claude-3-7-sonnet-20250219', 'claude-3-5-sonnet-20241022', 'claude-3-5-haiku-20241022'] },
+        { group: 'GPT',    models: ['gpt-4o', 'gpt-4o-mini', 'gpt-4.1', 'gpt-4.1-mini', 'o4-mini'] },
+        { group: 'Gemini', models: ['gemini-2.5-flash', 'gemini-2.5-pro', 'gemini-2.0-flash'] },
+        { group: 'DeepSeek', models: ['deepseek-chat', 'deepseek-reasoner'] },
+        { group: 'Qwen',   models: ['qwen-plus', 'qwen-max', 'qwen3-235b-a22b'] },
+    ];
+
+    // ── 默认设置 ─────────────────────────────────────────────────────────
     const DEFAULT_SETTINGS = {
-        apiUrl:      'https://api.anthropic.com',
+        apiUrl:      '',
         apiKey:      '',
+        apiType:     'openai',   // 'openai'（中转/OpenAI 兼容）或 'anthropic'（原生）
         model:       '',
         style:       'literary',
         customStyle: '',
         intensity:   3,
-        extraNote:   '',   // 存入cfg，修复 #10
+        extraNote:   '',
+        maxTokens:   4096,
+        temperature: 0.7,
     };
 
-    // ── 运行时状态 ───────────────────────────────────────────────────────────
-    let cfg            = Object.assign({}, DEFAULT_SETTINGS);
-    let selPresets     = new Set();
-    let currentResult  = '';
-    let inputSnapshot  = '';
-    let isStreaming    = false;
-    let diffBlocks     = [];
-    let lastRefineReq  = '';
-    let evBound        = false;
-    let modelsFetched  = false;   // 修复 #6：避免每次打开都重连
-    let abortController = null;   // 修复 #7：支持中止流式请求
+    // ── 运行时状态 ───────────────────────────────────────────────────────
+    let cfg             = Object.assign({}, DEFAULT_SETTINGS);
+    let selPresets       = new Set();
+    let currentResult    = '';
+    let inputSnapshot    = '';
+    let isStreaming       = false;
+    let diffBlocks       = [];
+    let lastRefineReq    = '';
+    let evBound          = false;
+    let modelsFetched    = false;
+    let abortController  = null;
 
-    // ── 安全转义（修复 #11）─────────────────────────────────────────────────
+    // ── 安全转义 ─────────────────────────────────────────────────────────
     function _esc(s) {
         const d = document.createElement('div');
         d.textContent = String(s);
@@ -66,6 +85,16 @@
     // POPUP HTML
     // ────────────────────────────────────────────────────────────────────────
     function buildPopupHtml() {
+        // 构建常用模型选项
+        let modelOptionsHtml = '<option value="">── 手动输入或从列表选择 ──</option>';
+        POPULAR_MODELS.forEach(g => {
+            modelOptionsHtml += `<optgroup label="${g.group}">`;
+            g.models.forEach(m => {
+                modelOptionsHtml += `<option value="${m}">${m}</option>`;
+            });
+            modelOptionsHtml += '</optgroup>';
+        });
+
         return `
 <div class="tp-wrapper">
     <div class="tp-tabs">
@@ -196,31 +225,98 @@
         <!-- ══ API Tab ══ -->
         <div id="tp-view-api" class="tp-view">
             <div class="tp-scroll">
+
+                <!-- API 连接 -->
                 <div class="tp-card">
                     <div class="tp-card-title">API 连接</div>
+
+                    <div class="tp-row">
+                        <label class="tp-label">API 类型</label>
+                        <select id="tp-api-type" class="tp-select">
+                            <option value="openai">OpenAI 兼容（中转 API 选此项）</option>
+                            <option value="anthropic">Anthropic 原生</option>
+                        </select>
+                    </div>
+
                     <div class="tp-row">
                         <label class="tp-label">API 地址</label>
                         <input id="tp-api-url" type="text" class="tp-input"
-                               placeholder="https://api.anthropic.com" />
+                               placeholder="例如：https://api.example.com" />
                     </div>
+                    <div id="tp-url-hint" class="tp-hint" style="margin:-4px 0 6px 68px;">
+                        中转 API 填写服务商提供的地址，无需加 /v1 后缀
+                    </div>
+
                     <div class="tp-row">
                         <label class="tp-label">API 密钥</label>
                         <input id="tp-api-key" type="password" class="tp-input"
-                               placeholder="sk-ant-api03-…" autocomplete="off" />
-                        <button id="tp-connect-btn" class="tp-btn tp-btn-primary tp-btn-icon" style="flex-shrink:0;">
-                            <i class="fa-solid fa-plug"></i> 连接
+                               placeholder="sk-…" autocomplete="off" />
+                    </div>
+
+                    <div class="tp-row" style="justify-content:flex-end;gap:8px;">
+                        <button id="tp-connect-btn" class="tp-btn tp-btn-primary" style="flex-shrink:0;">
+                            <i class="fa-solid fa-plug"></i> 连接并获取模型
                         </button>
                     </div>
+
                     <div id="tp-api-status" class="tp-api-status idle">● 未连接</div>
                 </div>
 
-                <div id="tp-model-card" class="tp-card" style="display:none;">
-                    <div class="tp-card-title">选择模型</div>
-                    <div class="tp-row">
-                        <select id="tp-model-select" class="tp-select"></select>
+                <!-- 模型选择 -->
+                <div class="tp-card">
+                    <div class="tp-card-title">模型设置</div>
+
+                    <div id="tp-model-card-fetched" style="display:none;">
+                        <div class="tp-row">
+                            <label class="tp-label">在线模型</label>
+                            <select id="tp-model-select" class="tp-select"></select>
+                        </div>
+                        <div id="tp-model-hint" style="font-size:0.76rem;opacity:0.5;margin-top:4px;"></div>
+                        <div class="tp-divider"></div>
                     </div>
-                    <div id="tp-model-hint" style="font-size:0.76rem;opacity:0.5;margin-top:4px;"></div>
+
+                    <div class="tp-row">
+                        <label class="tp-label">当前模型</label>
+                        <input id="tp-model-manual" type="text" class="tp-input"
+                               placeholder="输入模型名称，如 claude-sonnet-4-20250514" />
+                    </div>
+
+                    <div style="margin-top:8px;">
+                        <div style="font-size:0.76rem;opacity:0.5;margin-bottom:6px;">
+                            <i class="fa-solid fa-bolt"></i> 常用模型快速填入：
+                        </div>
+                        <div class="tp-preset-row" id="tp-model-presets">
+                            ${POPULAR_MODELS.map(g => 
+                                g.models.slice(0, 2).map(m => 
+                                    `<div class="tp-preset-tag tp-model-quick" data-model="${m}">${m}</div>`
+                                ).join('')
+                            ).join('')}
+                        </div>
+                    </div>
                 </div>
+
+                <!-- 生成参数 -->
+                <div class="tp-card">
+                    <div class="tp-card-title">生成参数</div>
+
+                    <div class="tp-row">
+                        <label class="tp-label">最大输出</label>
+                        <input id="tp-max-tokens" type="number" class="tp-input" 
+                               min="256" max="32768" step="256" placeholder="4096" style="max-width:120px;" />
+                        <span class="tp-hint">tokens</span>
+                    </div>
+
+                    <div class="tp-row" style="margin-top:4px;">
+                        <label class="tp-label">温度</label>
+                        <input id="tp-temperature" type="range" min="0" max="1.5" value="0.7" step="0.1"
+                               style="flex:1;accent-color:var(--SmartThemeQuoteColor);" />
+                        <span id="tp-temp-label" class="tp-intensity-val" style="min-width:36px;">0.7</span>
+                    </div>
+                    <div class="tp-hint" style="margin-top:2px;">
+                        低温度更稳定一致，高温度更富创意变化
+                    </div>
+                </div>
+
             </div>
         </div><!-- end tp-view-api -->
 
@@ -235,7 +331,6 @@
                 <button class="tp-diff-mode-btn" data-mode="final"><i class="fa-solid fa-eye"></i> 最终</button>
             </div>
             <div class="tp-diff-content">
-                <!-- contenteditable=false 避免浏览器插入<br>/<div>（修复 #3）-->
                 <div id="tp-diff-merge" class="tp-diff-merge-view" contenteditable="false"></div>
             </div>
             <div class="tp-diff-actions">
@@ -271,17 +366,29 @@
         if (typeof extension_settings !== 'undefined' && extension_settings[EXT_NAME]) {
             cfg = Object.assign({}, DEFAULT_SETTINGS, extension_settings[EXT_NAME]);
         }
+        // 兼容旧版设置：自动迁移
+        if (!cfg.apiType) {
+            cfg.apiType = (cfg.apiUrl || '').includes('anthropic.com') ? 'anthropic' : 'openai';
+        }
+        if (!cfg.maxTokens) cfg.maxTokens = 4096;
+        if (cfg.temperature === undefined || cfg.temperature === null) cfg.temperature = 0.7;
     }
 
     // ────────────────────────────────────────────────────────────────────────
     // UI 工具
     // ────────────────────────────────────────────────────────────────────────
-    function setApiStatus(state) {
+    function setApiStatus(state, customMsg) {
         const el = document.getElementById('tp-api-status');
         if (!el) return;
-        const map = { ok:'● 已连接', err:'● 连接失败', idle:'● 未连接', connecting:'● 连接中…' };
+        const map = {
+            ok:          '● 已连接',
+            err:         '● 连接失败',
+            idle:        '● 未连接',
+            connecting:  '● 连接中…',
+            manual:      '● 手动模式（未验证连接）',
+        };
         el.className = 'tp-api-status ' + state;
-        el.textContent = map[state] || '● 未连接';
+        el.textContent = customMsg || map[state] || '● 未连接';
     }
 
     function updateCharCount() {
@@ -295,7 +402,6 @@
         toastr[type === 'success' ? 'success' : type === 'error' ? 'error' : type === 'warning' ? 'warning' : 'info'](msg);
     }
 
-    // 流式期间禁用/恢复操作按钮（修复 #5）
     function setResultBtnsDisabled(disabled) {
         ['tp-compare-btn', 'tp-copy-btn', 'tp-send-btn', 'tp-refine-btn', 'tp-reuse-btn'].forEach(id => {
             const el = document.getElementById(id);
@@ -306,7 +412,18 @@
     }
 
     // ────────────────────────────────────────────────────────────────────────
-    // Prompt 构建（不再读 DOM，修复 #10）
+    // URL 清理工具
+    // ────────────────────────────────────────────────────────────────────────
+    function cleanApiUrl(url) {
+        return (url || '')
+            .trim()
+            .replace(/\/+$/, '')                         // 去除末尾斜杠
+            .replace(/\/v\d+\/?(chat\/completions)?$/, '') // 去除 /v1/chat/completions
+            .replace(/\/v\d+\/?$/, '');                   // 去除 /v1
+    }
+
+    // ────────────────────────────────────────────────────────────────────────
+    // Prompt 构建
     // ────────────────────────────────────────────────────────────────────────
     function buildPolishPrompt(inputText) {
         const styleDesc = cfg.style === 'custom'
@@ -353,49 +470,73 @@ ${oldText}
     }
 
     // ────────────────────────────────────────────────────────────────────────
-    // API 调用（含 AbortController，修复 #7）
+    // API 调用（根据 cfg.apiType 切换格式）
     // ────────────────────────────────────────────────────────────────────────
     function buildApiRequest(prompt) {
-        const url         = (cfg.apiUrl || '').replace(/\/$/, '');
+        const baseUrl     = cleanApiUrl(cfg.apiUrl);
         const key         = cfg.apiKey;
         const model       = cfg.model;
-        const isAnthropic = url.includes('anthropic.com');
-        const endpoint    = isAnthropic ? `${url}/v1/messages` : `${url}/v1/chat/completions`;
+        const isAnthropic = cfg.apiType === 'anthropic';
+        const maxTokens   = cfg.maxTokens || 4096;
+        const temperature = cfg.temperature ?? 0.7;
 
-        const headers = { 'Content-Type': 'application/json' };
+        let endpoint, headers, body;
+
         if (isAnthropic) {
-            headers['x-api-key'] = key;
-            headers['anthropic-version'] = '2023-06-01';
+            // Anthropic 原生格式
+            endpoint = `${baseUrl}/v1/messages`;
+            headers = {
+                'Content-Type': 'application/json',
+                'x-api-key': key,
+                'anthropic-version': '2023-06-01',
+            };
+            body = {
+                model,
+                max_tokens: maxTokens,
+                temperature,
+                stream: true,
+                messages: [{ role: 'user', content: prompt }],
+            };
         } else {
-            headers['Authorization'] = 'Bearer ' + key;
-        }
-
-        const body = isAnthropic
-            ? { model, max_tokens: 2048, stream: true,
-                messages: [{ role: 'user', content: prompt }] }
-            : { model, stream: true,
+            // OpenAI 兼容格式（中转 API 使用此格式）
+            endpoint = `${baseUrl}/v1/chat/completions`;
+            headers = {
+                'Content-Type': 'application/json',
+                'Authorization': 'Bearer ' + key,
+            };
+            body = {
+                model,
+                max_tokens: maxTokens,
+                temperature,
+                stream: true,
                 messages: [
                     { role: 'system', content: '你是一位专业的中文写作润色专家。' },
-                    { role: 'user',   content: prompt }
-                ]};
+                    { role: 'user',   content: prompt },
+                ],
+            };
+        }
 
         return { endpoint, headers, body: JSON.stringify(body), isAnthropic };
     }
 
     async function streamApiCall(prompt, onChunk) {
-        // 中止上一个请求
         abortController?.abort();
         abortController = new AbortController();
 
         const { endpoint, headers, body, isAnthropic } = buildApiRequest(prompt);
+
         const response = await fetch(endpoint, {
             method: 'POST', headers, body,
-            signal: abortController.signal
+            signal: abortController.signal,
         });
 
         if (!response.ok) {
-            const e = await response.json().catch(() => ({}));
-            throw new Error(e.error?.message || 'HTTP ' + response.status);
+            let errMsg = 'HTTP ' + response.status;
+            try {
+                const e = await response.json();
+                errMsg = e.error?.message || e.message || e.detail || errMsg;
+            } catch (_) {}
+            throw new Error(errMsg);
         }
 
         const reader  = response.body.getReader();
@@ -416,7 +557,9 @@ ${oldText}
                     const parsed = JSON.parse(data);
                     let text = null;
                     if (isAnthropic) {
-                        if (parsed.type === 'content_block_delta' && parsed.delta?.text) text = parsed.delta.text;
+                        if (parsed.type === 'content_block_delta' && parsed.delta?.text) {
+                            text = parsed.delta.text;
+                        }
                     } else {
                         text = parsed.choices?.[0]?.delta?.content || null;
                     }
@@ -427,106 +570,152 @@ ${oldText}
     }
 
     // ────────────────────────────────────────────────────────────────────────
-    // 连接并拉取模型（修复 #6：modelsFetched 防重复）
+    // 连接并拉取模型
     // ────────────────────────────────────────────────────────────────────────
     async function connectAndFetchModels(force = false) {
         const urlEl     = document.getElementById('tp-api-url');
         const keyEl     = document.getElementById('tp-api-key');
+        const typeEl    = document.getElementById('tp-api-type');
         const btn       = document.getElementById('tp-connect-btn');
-        const modelCard = document.getElementById('tp-model-card');
+        const fetchedCard = document.getElementById('tp-model-card-fetched');
 
-        const url = (urlEl?.value || cfg.apiUrl || '').trim().replace(/\/$/, '');
-        const key = (keyEl?.value || cfg.apiKey || '').trim();
+        const url  = cleanApiUrl(urlEl?.value || cfg.apiUrl || '');
+        const key  = (keyEl?.value || cfg.apiKey || '').trim();
+        const type = typeEl?.value || cfg.apiType || 'openai';
 
-        if (!url) { showToast('请填写 API 地址', 'warning'); return; }
-        if (!key) { showToast('请填写 API 密钥', 'warning'); return; }
+        if (!url)  { showToast('请填写 API 地址', 'warning'); return; }
+        if (!key)  { showToast('请填写 API 密钥', 'warning'); return; }
 
-        // 已经拉取成功且配置未变，跳过（修复 #6）
-        if (!force && modelsFetched && url === cfg.apiUrl && key === cfg.apiKey) {
-            if (modelCard) modelCard.style.display = 'block';
+        if (!force && modelsFetched && url === cfg.apiUrl && key === cfg.apiKey && type === cfg.apiType) {
+            if (fetchedCard) fetchedCard.style.display = 'block';
             setApiStatus('ok');
             return;
         }
 
-        cfg.apiUrl = url;
-        cfg.apiKey = key;
+        cfg.apiUrl  = url;
+        cfg.apiKey  = key;
+        cfg.apiType = type;
         saveSettings();
 
-        if (btn) { btn.disabled = true; btn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i>'; }
+        if (btn) { btn.disabled = true; btn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> 连接中…'; }
         setApiStatus('connecting');
-        if (modelCard) modelCard.style.display = 'none';
+        if (fetchedCard) fetchedCard.style.display = 'none';
 
-        const isAnthropic = url.includes('anthropic.com');
+        const isAnthropic = type === 'anthropic';
 
         try {
             let models = [];
+
             if (isAnthropic) {
                 const res = await fetch(`${url}/v1/models`, {
-                    headers: { 'x-api-key': key, 'anthropic-version': '2023-06-01' }
+                    headers: { 'x-api-key': key, 'anthropic-version': '2023-06-01' },
                 });
-                if (!res.ok) { const e = await res.json().catch(()=>({})); throw new Error(e.error?.message || 'HTTP ' + res.status); }
+                if (!res.ok) throw new Error(await getErrorMsg(res));
                 const data = await res.json();
                 models = (data.data || []).map(m => ({ id: m.id, name: m.display_name || m.id }));
             } else {
-                const cleanBase = url.replace(/\/chat\/completions$/, '');
-                const ep = /\/v\d+$/.test(cleanBase) ? `${cleanBase}/models` : `${cleanBase}/v1/models`;
-                const res = await fetch(ep, { headers: { 'Authorization': 'Bearer ' + key } });
-                if (!res.ok) { const e = await res.json().catch(()=>({})); throw new Error(e.error?.message || 'HTTP ' + res.status); }
+                // OpenAI 兼容（中转）：尝试获取模型列表
+                const ep = `${url}/v1/models`;
+                const res = await fetch(ep, {
+                    headers: { 'Authorization': 'Bearer ' + key },
+                });
+                if (!res.ok) throw new Error(await getErrorMsg(res));
                 const data = await res.json();
                 const raw  = data.data || data;
                 models = (Array.isArray(raw) ? raw : []).map(m => ({
                     id:   typeof m === 'string' ? m : m.id,
-                    name: typeof m === 'string' ? m : (m.id || m.name || m)
+                    name: typeof m === 'string' ? m : (m.id || m.name || m),
                 })).filter(m => m.id);
+
+                // 排序：常用模型优先
                 models.sort((a, b) => {
-                    const pri = id => (id.includes('gpt-4') || id.includes('claude') || id.includes('deepseek') ? 0 : id.includes('gpt-3') ? 1 : 2);
+                    const pri = id => {
+                        if (id.includes('claude'))   return 0;
+                        if (id.includes('gpt-4'))    return 1;
+                        if (id.includes('deepseek')) return 2;
+                        if (id.includes('qwen'))     return 3;
+                        if (id.includes('gemini'))   return 4;
+                        return 5;
+                    };
                     return pri(a.id) - pri(b.id);
                 });
             }
 
-            if (!models.length) throw new Error('未获取到任何模型');
-
-            const sel = document.getElementById('tp-model-select');
-            if (sel) {
-                sel.innerHTML = '';
-                models.forEach(m => {
-                    const opt = document.createElement('option');
-                    opt.value = m.id; opt.textContent = m.name;
-                    if (m.id === cfg.model) opt.selected = true;
-                    sel.appendChild(opt);
-                });
-                if (!cfg.model || !models.find(m => m.id === cfg.model)) {
-                    sel.value = models[0].id;
-                    cfg.model = models[0].id;
-                } else {
-                    sel.value = cfg.model;
+            if (models.length > 0) {
+                const sel = document.getElementById('tp-model-select');
+                if (sel) {
+                    sel.innerHTML = '';
+                    models.forEach(m => {
+                        const opt = document.createElement('option');
+                        opt.value = m.id;
+                        opt.textContent = m.name;
+                        if (m.id === cfg.model) opt.selected = true;
+                        sel.appendChild(opt);
+                    });
+                    if (!cfg.model || !models.find(m => m.id === cfg.model)) {
+                        sel.value = models[0].id;
+                        cfg.model = models[0].id;
+                    } else {
+                        sel.value = cfg.model;
+                    }
+                    // 同步到手动输入框
+                    const manualEl = document.getElementById('tp-model-manual');
+                    if (manualEl) manualEl.value = cfg.model;
                 }
+
+                const hint = document.getElementById('tp-model-hint');
+                if (hint) hint.textContent = `共 ${models.length} 个可用模型`;
+                if (fetchedCard) fetchedCard.style.display = 'block';
+                setApiStatus('ok');
+                modelsFetched = true;
+                showToast(`连接成功，获取到 ${models.length} 个模型`, 'success');
+            } else {
+                throw new Error('未获取到任何模型');
             }
+
             saveSettings();
 
-            const hint = document.getElementById('tp-model-hint');
-            if (hint) hint.textContent = `共 ${models.length} 个可用模型`;
-            if (modelCard) modelCard.style.display = 'block';
-            setApiStatus('ok');
-            modelsFetched = true;
-            showToast(`连接成功，获取到 ${models.length} 个模型`, 'success');
-
         } catch (err) {
-            setApiStatus('err');
+            // 模型获取失败时降级为手动模式
             modelsFetched = false;
-            showToast('连接失败：' + err.message, 'error');
+            if (fetchedCard) fetchedCard.style.display = 'none';
+
+            // 判断是否是认证失败（真正的错误）还是仅仅不支持 /v1/models
+            const isAuthError = /401|403|unauthorized|forbidden/i.test(err.message);
+
+            if (isAuthError) {
+                setApiStatus('err', '● 认证失败，请检查 API 密钥');
+                showToast('认证失败：' + err.message, 'error');
+            } else {
+                // 可能是中转 API 不支持 /v1/models，降级为手动输入
+                setApiStatus('manual', '● 无法获取模型列表，请手动输入模型名');
+                showToast('无法获取模型列表（中转 API 常见），请在下方手动输入模型名称', 'warning');
+                // 保存设置，虽然没有获取到模型列表，但 API 地址和密钥已保存
+                saveSettings();
+            }
         }
 
-        if (btn) { btn.disabled = false; btn.innerHTML = '<i class="fa-solid fa-plug"></i> 连接'; }
+        if (btn) { btn.disabled = false; btn.innerHTML = '<i class="fa-solid fa-plug"></i> 连接并获取模型'; }
+    }
+
+    // 辅助：提取错误信息
+    async function getErrorMsg(res) {
+        try {
+            const e = await res.json();
+            return e.error?.message || e.message || e.detail || 'HTTP ' + res.status;
+        } catch (_) {
+            return 'HTTP ' + res.status;
+        }
     }
 
     // ────────────────────────────────────────────────────────────────────────
-    // 主润色流程（修复 #2 颜色还原、#5 按钮禁用）
+    // 主润色流程
     // ────────────────────────────────────────────────────────────────────────
     async function runPolish(prompt) {
         if (isStreaming) return;
-        if (!cfg.apiKey) { showToast('请先在 API 标签页连接 API', 'warning'); return; }
-        if (!cfg.model)  { showToast('请先连接 API 并选择模型',   'warning'); return; }
+        if (!cfg.apiKey) { showToast('请先在 API 标签页填写 API 密钥', 'warning'); return; }
+        if (!cfg.apiUrl) { showToast('请先在 API 标签页填写 API 地址', 'warning'); return; }
+        if (!cfg.model)  { showToast('请先设置模型名称（API 标签页）', 'warning'); return; }
 
         isStreaming   = true;
         currentResult = '';
@@ -542,12 +731,9 @@ ${oldText}
         resultSec.style.display = 'block';
         loading.style.display   = 'flex';
 
-        // 修复 #2：每次开始前清空颜色和内容
         resultEl.textContent  = '';
         resultEl.style.color  = '';
         resultEl.className    = 'tp-result-content streaming';
-
-        // 修复 #5：流式中禁用操作按钮
         setResultBtnsDisabled(true);
 
         try {
@@ -560,12 +746,11 @@ ${oldText}
             showToast('润色完成！', 'success');
         } catch (err) {
             if (err.name === 'AbortError') {
-                // 用户主动停止
                 resultEl.className = 'tp-result-content';
                 showToast('已停止生成', 'info');
             } else {
                 resultEl.className   = 'tp-result-content';
-                resultEl.style.color = '#e74c3c';  // 只在真正出错时设红色
+                resultEl.style.color = '#e74c3c';
                 resultEl.textContent = '❌ 错误：' + err.message;
                 setApiStatus('err');
                 showToast('润色失败：' + err.message, 'error');
@@ -579,9 +764,9 @@ ${oldText}
     }
 
     // ────────────────────────────────────────────────────────────────────────
-    // Diff 算法（超长文本降级，修复 #8）
+    // Diff 算法
     // ────────────────────────────────────────────────────────────────────────
-    const DIFF_TOKEN_LIMIT = 400; // 超过此数量 token 直接整体 diff
+    const DIFF_TOKEN_LIMIT = 400;
 
     function tokenize(t) {
         const tokens = []; let cur = '';
@@ -596,11 +781,8 @@ ${oldText}
     function computeDiff(oldText, newText) {
         const A = tokenize(oldText), B = tokenize(newText);
 
-        // 超长降级：直接视为整体替换（修复 #8）
         if (A.length > DIFF_TOKEN_LIMIT || B.length > DIFF_TOKEN_LIMIT) {
-            return [
-                { type: 'diff', oldText, newText, active: 'new' }
-            ];
+            return [{ type: 'diff', oldText, newText, active: 'new' }];
         }
 
         const m = A.length, n = B.length;
@@ -645,16 +827,12 @@ ${oldText}
             }
         });
         const merge = document.getElementById('tp-diff-merge');
-        if (merge) {
-            merge.innerHTML = html;
-            merge.className = 'tp-diff-merge-view'; // 清除 mode 类名
-        }
+        if (merge) { merge.innerHTML = html; merge.className = 'tp-diff-merge-view'; }
         document.querySelectorAll('.tp-diff-mode-btn').forEach(b => b.classList.remove('active'));
         const overlay = document.getElementById('tp-diff-overlay');
         if (overlay) overlay.style.display = 'flex';
     }
 
-    // 组装最终结果（contenteditable=false，从 diffBlocks 读取，修复 #3）
     function assembleDiff() {
         return diffBlocks.map(b => {
             if (b.type === 'equal') return b.value;
@@ -663,7 +841,7 @@ ${oldText}
     }
 
     // ────────────────────────────────────────────────────────────────────────
-    // 导入最新 AI 消息（修复 #9 XSS 清理）
+    // 导入最新 AI 消息
     // ────────────────────────────────────────────────────────────────────────
     function importLastMessage() {
         try {
@@ -673,7 +851,6 @@ ${oldText}
             for (let i = chat.length - 1; i >= 0; i--) {
                 if (!chat[i].is_user && chat[i].mes) {
                     const tmp = document.createElement('div');
-                    // 用 DOMPurify（ST 内置）清理后再赋值（修复 #9）
                     const raw = chat[i].mes;
                     tmp.innerHTML = typeof DOMPurify !== 'undefined'
                         ? DOMPurify.sanitize(raw, { ALLOWED_TAGS: [] })
@@ -693,8 +870,17 @@ ${oldText}
     // ────────────────────────────────────────────────────────────────────────
     function restoreUI() {
         const s = id => document.getElementById(id);
+
+        // API 设置
+        if (s('tp-api-type'))      s('tp-api-type').value      = cfg.apiType || 'openai';
         if (s('tp-api-url'))       s('tp-api-url').value       = cfg.apiUrl || '';
         if (s('tp-api-key'))       s('tp-api-key').value       = cfg.apiKey || '';
+        if (s('tp-model-manual'))  s('tp-model-manual').value  = cfg.model || '';
+        if (s('tp-max-tokens'))    s('tp-max-tokens').value    = cfg.maxTokens || 4096;
+        if (s('tp-temperature'))   s('tp-temperature').value   = cfg.temperature ?? 0.7;
+        if (s('tp-temp-label'))    s('tp-temp-label').textContent = String(cfg.temperature ?? 0.7);
+
+        // 润色设置
         if (s('tp-extra-note'))    s('tp-extra-note').value    = cfg.extraNote || '';
         if (s('tp-intensity'))     s('tp-intensity').value     = cfg.intensity || 3;
         if (s('tp-intensity-label')) s('tp-intensity-label').textContent = (INTENSITY[cfg.intensity] || INTENSITY[3]).label;
@@ -705,15 +891,32 @@ ${oldText}
         if (customBox) customBox.style.display = cfg.style === 'custom' ? 'block' : 'none';
         if (s('tp-custom-style')) s('tp-custom-style').value = cfg.customStyle || '';
 
-        // 修复 #6：有保存的连接信息且本次会话尚未拉取过，才自动重连
+        // URL 提示更新
+        updateUrlHint();
+
+        // 自动连接
         if (!modelsFetched && cfg.apiKey && cfg.apiUrl) {
             connectAndFetchModels(false);
         } else if (modelsFetched) {
             setApiStatus('ok');
-            const mc = s('tp-model-card');
+            const mc = s('tp-model-card-fetched');
             if (mc) mc.style.display = 'block';
+        } else if (cfg.model && cfg.apiKey) {
+            setApiStatus('manual');
         } else {
             setApiStatus('idle');
+        }
+    }
+
+    // URL 提示文字更新
+    function updateUrlHint() {
+        const hintEl = document.getElementById('tp-url-hint');
+        const typeEl = document.getElementById('tp-api-type');
+        if (!hintEl || !typeEl) return;
+        if (typeEl.value === 'anthropic') {
+            hintEl.textContent = 'Anthropic 原生 API 地址：https://api.anthropic.com';
+        } else {
+            hintEl.textContent = '中转 API 填写服务商提供的地址，无需加 /v1 后缀';
         }
     }
 
@@ -754,36 +957,86 @@ ${oldText}
         });
 
         // 预设标签
-        onQ('.tp-preset-tag', 'click', function () {
+        onQ('.tp-preset-tag:not(.tp-model-quick)', 'click', function () {
             const p = this.dataset.preset;
+            if (!p) return;
             if (selPresets.has(p)) { selPresets.delete(p); this.classList.remove('active'); }
             else                   { selPresets.add(p);    this.classList.add('active'); }
         });
 
-        // 额外说明（存入 cfg，修复 #10）
         on('tp-extra-note', 'input', function () { cfg.extraNote = this.value; saveSettings(); });
-
-        // 输入框字数
         on('tp-input', 'input', updateCharCount);
 
-        // 连接（force=true）
+        // ── API 标签页事件 ──
+
+        // API 类型切换
+        on('tp-api-type', 'change', function () {
+            cfg.apiType = this.value;
+            updateUrlHint();
+            modelsFetched = false; // 切换类型后需重新连接
+            saveSettings();
+        });
+
+        // 连接按钮
         on('tp-connect-btn', 'click', () => {
-            // 保存当前输入框的值到 cfg（手动触发时刷新）
-            const urlEl = document.getElementById('tp-api-url');
-            const keyEl = document.getElementById('tp-api-key');
-            if (urlEl) cfg.apiUrl = urlEl.value.trim();
-            if (keyEl) cfg.apiKey = keyEl.value.trim();
+            const urlEl  = document.getElementById('tp-api-url');
+            const keyEl  = document.getElementById('tp-api-key');
+            const typeEl = document.getElementById('tp-api-type');
+            if (urlEl)  cfg.apiUrl  = cleanApiUrl(urlEl.value);
+            if (keyEl)  cfg.apiKey  = keyEl.value.trim();
+            if (typeEl) cfg.apiType = typeEl.value;
             connectAndFetchModels(true);
         });
 
-        on('tp-api-url', 'change', function () { cfg.apiUrl = this.value.trim(); saveSettings(); });
+        on('tp-api-url', 'change', function () { cfg.apiUrl = cleanApiUrl(this.value); saveSettings(); });
         on('tp-api-key', 'change', function () { cfg.apiKey = this.value.trim(); saveSettings(); });
-        on('tp-model-select', 'change', function () { cfg.model = this.value; saveSettings(); });
 
-        // 导入消息
+        // 在线模型下拉选择 → 同步到手动输入框
+        on('tp-model-select', 'change', function () {
+            cfg.model = this.value;
+            const manualEl = document.getElementById('tp-model-manual');
+            if (manualEl) manualEl.value = this.value;
+            saveSettings();
+        });
+
+        // 手动输入模型名
+        on('tp-model-manual', 'change', function () {
+            cfg.model = this.value.trim();
+            saveSettings();
+        });
+        // 实时同步（input 事件）
+        on('tp-model-manual', 'input', function () {
+            cfg.model = this.value.trim();
+        });
+
+        // 常用模型快速填入
+        onQ('.tp-model-quick', 'click', function () {
+            const model = this.dataset.model;
+            if (!model) return;
+            cfg.model = model;
+            const manualEl = document.getElementById('tp-model-manual');
+            if (manualEl) manualEl.value = model;
+            saveSettings();
+            showToast('已选择模型：' + model, 'info');
+        });
+
+        // 生成参数
+        on('tp-max-tokens', 'change', function () {
+            cfg.maxTokens = parseInt(this.value) || 4096;
+            saveSettings();
+        });
+
+        on('tp-temperature', 'input', function () {
+            cfg.temperature = parseFloat(this.value);
+            const lbl = document.getElementById('tp-temp-label');
+            if (lbl) lbl.textContent = cfg.temperature.toFixed(1);
+            saveSettings();
+        });
+
+        // ── 润色操作事件 ──
+
         on('tp-import-btn', 'click', importLastMessage);
 
-        // 清空输入
         on('tp-clear-input-btn', 'click', () => {
             const el = document.getElementById('tp-input');
             if (el) el.value = '';
@@ -793,10 +1046,8 @@ ${oldText}
             currentResult = '';
         });
 
-        // 停止生成
         on('tp-stop-btn', 'click', () => { abortController?.abort(); });
 
-        // 开始润色
         on('tp-run-btn', 'click', () => {
             const inputEl = document.getElementById('tp-input');
             const text    = inputEl?.value?.trim();
@@ -805,7 +1056,6 @@ ${oldText}
             runPolish(buildPolishPrompt(text));
         });
 
-        // 再次润色
         on('tp-reuse-btn', 'click', () => {
             if (!currentResult) return;
             const el = document.getElementById('tp-input');
@@ -816,14 +1066,12 @@ ${oldText}
             currentResult = '';
         });
 
-        // 复制
         on('tp-copy-btn', 'click', () => {
             if (!currentResult) return;
             navigator.clipboard.writeText(currentResult)
                 .then(() => showToast('已复制到剪贴板', 'success'));
         });
 
-        // 发送到输入框
         on('tp-send-btn', 'click', () => {
             if (!currentResult) return;
             const stInput = document.getElementById('send_textarea');
@@ -834,13 +1082,11 @@ ${oldText}
             } else { showToast('找不到 ST 输入框', 'warning'); }
         });
 
-        // 对比视图
         on('tp-compare-btn', 'click', () => {
             if (!currentResult || !inputSnapshot) { showToast('暂无可对比的内容', 'warning'); return; }
             renderDiff(inputSnapshot, currentResult);
         });
 
-        // 润色意见
         on('tp-refine-btn', 'click', async () => {
             if (isStreaming) return;
             const refineEl    = document.getElementById('tp-refine-input');
@@ -875,14 +1121,12 @@ ${oldText}
             if (hint) hint.style.display = 'none';
         });
 
-        // Diff 片段点击切换（修复 #4：判断逻辑）
+        // Diff 片段点击切换
         const mergeEl = document.getElementById('tp-diff-merge');
         if (mergeEl) {
             mergeEl.addEventListener('click', function (e) {
                 const el = e.target;
-                // 修复 #4：有 mode 类名时处于筛选模式，不允许交互
                 if (this.className.includes('tp-diff-mode-')) return;
-
                 const idx = parseInt(el.dataset.idx);
                 if (isNaN(idx) || !diffBlocks[idx] || diffBlocks[idx].type !== 'diff') return;
 
@@ -904,13 +1148,11 @@ ${oldText}
             });
         }
 
-        // Diff 放弃
         on('tp-diff-cancel', 'click', () => {
             const overlay = document.getElementById('tp-diff-overlay');
             if (overlay) overlay.style.display = 'none';
         });
 
-        // Diff 应用
         on('tp-diff-confirm', 'click', () => {
             const final    = assembleDiff();
             currentResult  = final;
@@ -921,7 +1163,6 @@ ${oldText}
             showToast('修改已应用', 'success');
         });
 
-        // Diff 重新生成
         on('tp-diff-reroll', 'click', async () => {
             if (isStreaming || !lastRefineReq || !inputSnapshot) return;
             const oldText = inputSnapshot;
@@ -931,12 +1172,10 @@ ${oldText}
     }
 
     // ────────────────────────────────────────────────────────────────────────
-    // 打开弹窗（修复 #1：先移除旧降级弹窗）
+    // 打开弹窗
     // ────────────────────────────────────────────────────────────────────────
     async function openPopup() {
         loadSettings();
-
-        // 修复 #1：移除旧降级弹窗，防止重复绑定
         document.getElementById('tp-fallback-overlay')?.remove();
 
         const html = buildPopupHtml();
@@ -953,30 +1192,23 @@ ${oldText}
             const closeBtn = document.createElement('button');
             closeBtn.textContent = '关闭';
             closeBtn.style.cssText = 'margin:8px 16px 12px;padding:7px;border-radius:6px;border:1px solid var(--SmartThemeBorderColor,#555);cursor:pointer;background:transparent;color:inherit;';
-            closeBtn.onclick = () => {
-                abortController?.abort();
-                overlay.remove();
-            };
+            closeBtn.onclick = () => { abortController?.abort(); overlay.remove(); };
             box.appendChild(closeBtn);
             overlay.appendChild(box);
             overlay.addEventListener('click', e => {
-                if (e.target === overlay) {
-                    abortController?.abort();
-                    overlay.remove();
-                }
+                if (e.target === overlay) { abortController?.abort(); overlay.remove(); }
             });
             document.body.appendChild(overlay);
         }
 
         await new Promise(r => setTimeout(r, 80));
-
         restoreUI();
         bindPopupEvents();
         updateCharCount();
     }
 
     // ────────────────────────────────────────────────────────────────────────
-    // 魔棒按钮（修复 #15：移除错误挂载目标 .mes_text）
+    // 魔棒按钮
     // ────────────────────────────────────────────────────────────────────────
     function addWandButton() {
         if (document.getElementById(WAND_BTN_ID)) return;
@@ -987,13 +1219,7 @@ ${oldText}
         btn.title = '打开文字润色工坊';
         btn.addEventListener('click', openPopup);
 
-        // 修复 #15：只挂载到正确的输入区容器，移除 .mes_text:last-child
-        const targets = [
-            '#send_form',
-            '#chat_input_area',
-            '#rightSendForm',
-            '#send_textarea', // 最后备选：直接挂到 textarea 前
-        ];
+        const targets = ['#send_form', '#chat_input_area', '#rightSendForm', '#send_textarea'];
         let mounted = false;
         for (const sel of targets) {
             const container = document.querySelector(sel);
@@ -1003,14 +1229,11 @@ ${oldText}
                 break;
             }
         }
-        if (!mounted) {
-            // 实在找不到就挂到 body 底部，至少能用
-            document.body.appendChild(btn);
-        }
+        if (!mounted) document.body.appendChild(btn);
     }
 
     // ────────────────────────────────────────────────────────────────────────
-    // 全局事件（只绑一次）
+    // 全局事件
     // ────────────────────────────────────────────────────────────────────────
     function bindGlobalEvents() {
         if (evBound) return;
@@ -1019,7 +1242,7 @@ ${oldText}
             try {
                 const ctx = SillyTavern.getContext();
                 if (ctx?.eventSource && ctx?.eventTypes) {
-                    ctx.eventSource.on(ctx.eventTypes.APP_READY,           addWandButton);
+                    ctx.eventSource.on(ctx.eventTypes.APP_READY,            addWandButton);
                     ctx.eventSource.on(ctx.eventTypes.MOVABLE_PANELS_RESET, addWandButton);
                 }
             } catch (_) {}
@@ -1033,7 +1256,7 @@ ${oldText}
         loadSettings();
         addWandButton();
         bindGlobalEvents();
-        console.log('[文字润色工坊] v2.1 加载完成 ✓');
+        console.log('[文字润色工坊] v2.2 加载完成 ✓');
     }
 
     if (document.readyState === 'loading') {
