@@ -1,12 +1,23 @@
 /**
- * 文字润色工坊 v2.0 — SillyTavern Extension
- * 规范参照 Persona Weaver，使用 callPopup 弹窗 + 魔棒按钮
+ * 文字润色工坊 v2.1 — SillyTavern Extension
+ * 修复：颜色未还原、Diff点击判断、错误挂载目标、重复弹窗、
+ *       流式中按钮未禁用、AbortController、每次重连、DOM耦合、
+ *       _esc安全、强度配置合并、contenteditable读取
  */
 (function () {
     'use strict';
 
-    const EXT_NAME   = 'st-text-polish';
+    const EXT_NAME    = 'st-text-polish';
     const WAND_BTN_ID = 'tp-wand-btn';
+
+    // ── 强度配置（合并 label + desc，修复 #12）────────────────────────────
+    const INTENSITY = {
+        1: { label: '极轻微', desc: '尽量保留原文，只做微小词句优化' },
+        2: { label: '轻度',   desc: '轻度改写，保留原意和结构，优化表达' },
+        3: { label: '均衡',   desc: '适度改写，保留核心内容，提升文学性' },
+        4: { label: '深度',   desc: '深度重写，大幅提升表达质量，可改变句式' },
+        5: { label: '大幅重写', desc: '完全重塑，以原文意思为基础彻底重写成高质量文本' },
+    };
 
     // ── 风格 Prompt ──────────────────────────────────────────────────────────
     const STYLE_PROMPTS = {
@@ -20,14 +31,6 @@
         dark:       '暗黑哥特风格：基调深沉阴郁，充满隐喻和象征，神秘压抑中透露美感，如哥特文学或心理惊悚',
         custom:     '',
     };
-    const INTENSITY_DESC = {
-        1:'尽量保留原文，只做微小词句优化',
-        2:'轻度改写，保留原意和结构，优化表达',
-        3:'适度改写，保留核心内容，提升文学性',
-        4:'深度重写，大幅提升表达质量，可改变句式',
-        5:'完全重塑，以原文意思为基础彻底重写成高质量文本',
-    };
-    const INTENSITY_LABEL = { 1:'极轻微', 2:'轻度', 3:'均衡', 4:'深度', 5:'大幅重写' };
 
     // ── 默认设置 ─────────────────────────────────────────────────────────────
     const DEFAULT_SETTINGS = {
@@ -37,18 +40,27 @@
         style:       'literary',
         customStyle: '',
         intensity:   3,
+        extraNote:   '',   // 存入cfg，修复 #10
     };
 
     // ── 运行时状态 ───────────────────────────────────────────────────────────
-    let cfg          = Object.assign({}, DEFAULT_SETTINGS);
-    let selPresets   = new Set();
-    let currentResult = '';
-    let inputSnapshot = '';
-    let isStreaming   = false;
-    let diffBlocks    = [];
-    let lastRefineReq = '';
-    let compareOn     = false;
-    let evBound       = false;
+    let cfg            = Object.assign({}, DEFAULT_SETTINGS);
+    let selPresets     = new Set();
+    let currentResult  = '';
+    let inputSnapshot  = '';
+    let isStreaming    = false;
+    let diffBlocks     = [];
+    let lastRefineReq  = '';
+    let evBound        = false;
+    let modelsFetched  = false;   // 修复 #6：避免每次打开都重连
+    let abortController = null;   // 修复 #7：支持中止流式请求
+
+    // ── 安全转义（修复 #11）─────────────────────────────────────────────────
+    function _esc(s) {
+        const d = document.createElement('div');
+        d.textContent = String(s);
+        return d.innerHTML;
+    }
 
     // ────────────────────────────────────────────────────────────────────────
     // POPUP HTML
@@ -56,20 +68,18 @@
     function buildPopupHtml() {
         return `
 <div class="tp-wrapper">
-    <!-- 顶部 Tab 导航 -->
     <div class="tp-tabs">
         <div class="tp-tab active" data-tab="polish">✦ 润色</div>
         <div class="tp-tab" data-tab="api">⚙ API</div>
     </div>
 
-    <!-- 相对定位容器（diff overlay 绝对定位于此） -->
     <div class="tp-relative" style="flex:1;display:flex;flex-direction:column;overflow:hidden;">
 
         <!-- ══ 润色 Tab ══ -->
         <div id="tp-view-polish" class="tp-view active">
             <div class="tp-scroll">
 
-                <!-- 风格选择 -->
+                <!-- 风格 + 强度 -->
                 <div class="tp-card">
                     <div class="tp-card-title">润色风格</div>
                     <div class="tp-style-grid" id="tp-style-grid">
@@ -90,7 +100,6 @@
 
                     <div class="tp-divider"></div>
 
-                    <!-- 强度 -->
                     <div class="tp-card-title" style="margin-bottom:8px;">润色强度</div>
                     <div class="tp-intensity-row">
                         <span class="tp-intensity-tip">轻微</span>
@@ -140,22 +149,22 @@
                         <div class="tp-result-header">
                             <span class="tp-result-tag"><i class="fa-solid fa-wand-magic-sparkles"></i> 润色结果</span>
                             <div class="tp-result-actions">
+                                <button id="tp-stop-btn" class="tp-btn tp-btn-danger" style="display:none;padding:5px 10px;font-size:0.8rem;">
+                                    <i class="fa-solid fa-stop"></i> 停止
+                                </button>
                                 <button id="tp-compare-btn" class="tp-btn tp-btn-ghost" style="padding:5px 10px;font-size:0.8rem;">对比视图</button>
                                 <button id="tp-copy-btn" class="tp-btn tp-btn-ghost" style="padding:5px 10px;font-size:0.8rem;"><i class="fa-solid fa-copy"></i> 复制</button>
                                 <button id="tp-send-btn" class="tp-btn tp-btn-ghost" style="padding:5px 10px;font-size:0.8rem;"><i class="fa-solid fa-arrow-up-from-bracket"></i> 发送到输入框</button>
                             </div>
                         </div>
 
-                        <!-- 加载动画 -->
                         <div id="tp-loading" class="tp-loading" style="display:none;">
                             <span></span><span></span><span></span>
-                            <em id="tp-loading-text">AI 润色中…</em>
+                            <em>AI 润色中…</em>
                         </div>
 
-                        <!-- 正文 -->
                         <div id="tp-result-content" class="tp-result-content"></div>
 
-                        <!-- 润色意见区 -->
                         <div class="tp-divider"></div>
                         <div style="font-size:0.8rem;opacity:0.65;margin-bottom:5px;">对结果不满意？输入修改意见重新润色：</div>
                         <div class="tp-refine-area">
@@ -170,7 +179,6 @@
 
             </div><!-- end .tp-scroll -->
 
-            <!-- 底部操作栏 -->
             <div class="tp-footer">
                 <div class="tp-footer-left">
                     <button id="tp-reuse-btn" class="tp-btn tp-btn-ghost" title="将结果放回输入框，再次润色">
@@ -190,7 +198,6 @@
             <div class="tp-scroll">
                 <div class="tp-card">
                     <div class="tp-card-title">API 连接</div>
-
                     <div class="tp-row">
                         <label class="tp-label">API 地址</label>
                         <input id="tp-api-url" type="text" class="tp-input"
@@ -204,11 +211,9 @@
                             <i class="fa-solid fa-plug"></i> 连接
                         </button>
                     </div>
-
                     <div id="tp-api-status" class="tp-api-status idle">● 未连接</div>
                 </div>
 
-                <!-- 模型选择（连接后显示） -->
                 <div id="tp-model-card" class="tp-card" style="display:none;">
                     <div class="tp-card-title">选择模型</div>
                     <div class="tp-row">
@@ -219,16 +224,19 @@
             </div>
         </div><!-- end tp-view-api -->
 
-        <!-- ══ Diff 对比视图（绝对覆盖） ══ -->
+        <!-- ══ Diff 对比视图 ══ -->
         <div id="tp-diff-overlay" class="tp-diff-overlay" style="display:none;">
             <div class="tp-diff-toolbar">
-                <span class="tp-diff-hint"><i class="fa-solid fa-circle-info"></i> 点击高亮文字切换保留版本</span>
+                <span class="tp-diff-hint" id="tp-diff-hint">
+                    <i class="fa-solid fa-circle-info"></i> 点击高亮文字切换保留版本
+                </span>
                 <button class="tp-diff-mode-btn" data-mode="old"><i class="fa-solid fa-file-lines"></i> 原文</button>
                 <button class="tp-diff-mode-btn" data-mode="new"><i class="fa-solid fa-file-circle-plus"></i> 新版</button>
                 <button class="tp-diff-mode-btn" data-mode="final"><i class="fa-solid fa-eye"></i> 最终</button>
             </div>
             <div class="tp-diff-content">
-                <div id="tp-diff-merge" class="tp-diff-merge-view" contenteditable="true"></div>
+                <!-- contenteditable=false 避免浏览器插入<br>/<div>（修复 #3）-->
+                <div id="tp-diff-merge" class="tp-diff-merge-view" contenteditable="false"></div>
             </div>
             <div class="tp-diff-actions">
                 <button id="tp-diff-reroll" class="tp-btn tp-btn-ghost" title="用相同意见重新生成">
@@ -250,7 +258,7 @@
     }
 
     // ────────────────────────────────────────────────────────────────────────
-    // 工具函数
+    // 设置持久化
     // ────────────────────────────────────────────────────────────────────────
     function saveSettings() {
         if (typeof extension_settings !== 'undefined') {
@@ -265,6 +273,9 @@
         }
     }
 
+    // ────────────────────────────────────────────────────────────────────────
+    // UI 工具
+    // ────────────────────────────────────────────────────────────────────────
     function setApiStatus(state) {
         const el = document.getElementById('tp-api-status');
         if (!el) return;
@@ -274,31 +285,36 @@
     }
 
     function updateCharCount() {
-        const el = document.getElementById('tp-input');
+        const el  = document.getElementById('tp-input');
         const cnt = document.getElementById('tp-char-count');
         if (el && cnt) cnt.textContent = (el.value?.length || 0) + ' 字';
     }
 
     function showToast(msg, type = 'info') {
-        if (typeof toastr !== 'undefined') {
-            if (type === 'success') toastr.success(msg);
-            else if (type === 'error') toastr.error(msg);
-            else if (type === 'warning') toastr.warning(msg);
-            else toastr.info(msg);
-        }
+        if (typeof toastr === 'undefined') return;
+        toastr[type === 'success' ? 'success' : type === 'error' ? 'error' : type === 'warning' ? 'warning' : 'info'](msg);
+    }
+
+    // 流式期间禁用/恢复操作按钮（修复 #5）
+    function setResultBtnsDisabled(disabled) {
+        ['tp-compare-btn', 'tp-copy-btn', 'tp-send-btn', 'tp-refine-btn', 'tp-reuse-btn'].forEach(id => {
+            const el = document.getElementById(id);
+            if (el) el.disabled = disabled;
+        });
+        const stopBtn = document.getElementById('tp-stop-btn');
+        if (stopBtn) stopBtn.style.display = disabled ? 'inline-flex' : 'none';
     }
 
     // ────────────────────────────────────────────────────────────────────────
-    // Prompt 构建
+    // Prompt 构建（不再读 DOM，修复 #10）
     // ────────────────────────────────────────────────────────────────────────
     function buildPolishPrompt(inputText) {
         const styleDesc = cfg.style === 'custom'
             ? (cfg.customStyle || '优美流畅的文学风格')
             : (STYLE_PROMPTS[cfg.style] || STYLE_PROMPTS.literary);
-        const presetsStr = selPresets.size > 0
-            ? '\n额外要求：' + [...selPresets].join('、') : '';
-        const noteEl = document.getElementById('tp-extra-note');
-        const noteStr = noteEl?.value?.trim() ? '\n特别说明：' + noteEl.value.trim() : '';
+        const intensityInfo = INTENSITY[cfg.intensity] || INTENSITY[3];
+        const presetsStr   = selPresets.size > 0 ? '\n额外要求：' + [...selPresets].join('、') : '';
+        const noteStr      = cfg.extraNote ? '\n特别说明：' + cfg.extraNote : '';
 
         return `你是一位专业的中文写作润色专家，擅长文学创作和语言美化。
 
@@ -306,7 +322,7 @@
 
 【目标风格】${styleDesc}
 
-【润色强度】${INTENSITY_DESC[cfg.intensity] || INTENSITY_DESC[3]}${presetsStr}${noteStr}
+【润色强度】${intensityInfo.desc}${presetsStr}${noteStr}
 
 【注意事项】
 - 保持原文的核心意思和情节
@@ -337,14 +353,14 @@ ${oldText}
     }
 
     // ────────────────────────────────────────────────────────────────────────
-    // API 调用
+    // API 调用（含 AbortController，修复 #7）
     // ────────────────────────────────────────────────────────────────────────
     function buildApiRequest(prompt) {
-        const url   = (cfg.apiUrl || '').replace(/\/$/, '');
-        const key   = cfg.apiKey;
-        const model = cfg.model;
+        const url         = (cfg.apiUrl || '').replace(/\/$/, '');
+        const key         = cfg.apiKey;
+        const model       = cfg.model;
         const isAnthropic = url.includes('anthropic.com');
-        const endpoint = isAnthropic ? `${url}/v1/messages` : `${url}/v1/chat/completions`;
+        const endpoint    = isAnthropic ? `${url}/v1/messages` : `${url}/v1/chat/completions`;
 
         const headers = { 'Content-Type': 'application/json' };
         if (isAnthropic) {
@@ -367,8 +383,16 @@ ${oldText}
     }
 
     async function streamApiCall(prompt, onChunk) {
+        // 中止上一个请求
+        abortController?.abort();
+        abortController = new AbortController();
+
         const { endpoint, headers, body, isAnthropic } = buildApiRequest(prompt);
-        const response = await fetch(endpoint, { method: 'POST', headers, body });
+        const response = await fetch(endpoint, {
+            method: 'POST', headers, body,
+            signal: abortController.signal
+        });
+
         if (!response.ok) {
             const e = await response.json().catch(() => ({}));
             throw new Error(e.error?.message || 'HTTP ' + response.status);
@@ -403,19 +427,26 @@ ${oldText}
     }
 
     // ────────────────────────────────────────────────────────────────────────
-    // 连接并拉取模型列表
+    // 连接并拉取模型（修复 #6：modelsFetched 防重复）
     // ────────────────────────────────────────────────────────────────────────
-    async function connectAndFetchModels() {
-        const urlEl  = document.getElementById('tp-api-url');
-        const keyEl  = document.getElementById('tp-api-key');
-        const btn    = document.getElementById('tp-connect-btn');
+    async function connectAndFetchModels(force = false) {
+        const urlEl     = document.getElementById('tp-api-url');
+        const keyEl     = document.getElementById('tp-api-key');
+        const btn       = document.getElementById('tp-connect-btn');
         const modelCard = document.getElementById('tp-model-card');
 
-        const url = (urlEl?.value || '').trim().replace(/\/$/, '');
-        const key = (keyEl?.value || '').trim();
+        const url = (urlEl?.value || cfg.apiUrl || '').trim().replace(/\/$/, '');
+        const key = (keyEl?.value || cfg.apiKey || '').trim();
 
         if (!url) { showToast('请填写 API 地址', 'warning'); return; }
         if (!key) { showToast('请填写 API 密钥', 'warning'); return; }
+
+        // 已经拉取成功且配置未变，跳过（修复 #6）
+        if (!force && modelsFetched && url === cfg.apiUrl && key === cfg.apiKey) {
+            if (modelCard) modelCard.style.display = 'block';
+            setApiStatus('ok');
+            return;
+        }
 
         cfg.apiUrl = url;
         cfg.apiKey = key;
@@ -442,13 +473,13 @@ ${oldText}
                 const res = await fetch(ep, { headers: { 'Authorization': 'Bearer ' + key } });
                 if (!res.ok) { const e = await res.json().catch(()=>({})); throw new Error(e.error?.message || 'HTTP ' + res.status); }
                 const data = await res.json();
-                const raw = data.data || data;
+                const raw  = data.data || data;
                 models = (Array.isArray(raw) ? raw : []).map(m => ({
-                    id: typeof m === 'string' ? m : m.id,
+                    id:   typeof m === 'string' ? m : m.id,
                     name: typeof m === 'string' ? m : (m.id || m.name || m)
                 })).filter(m => m.id);
-                models.sort((a,b) => {
-                    const pri = id => (id.includes('gpt-4')||id.includes('claude')||id.includes('deepseek') ? 0 : id.includes('gpt-3') ? 1 : 2);
+                models.sort((a, b) => {
+                    const pri = id => (id.includes('gpt-4') || id.includes('claude') || id.includes('deepseek') ? 0 : id.includes('gpt-3') ? 1 : 2);
                     return pri(a.id) - pri(b.id);
                 });
             }
@@ -456,19 +487,20 @@ ${oldText}
             if (!models.length) throw new Error('未获取到任何模型');
 
             const sel = document.getElementById('tp-model-select');
-            sel.innerHTML = '';
-            models.forEach(m => {
-                const opt = document.createElement('option');
-                opt.value = m.id; opt.textContent = m.name;
-                if (m.id === cfg.model) opt.selected = true;
-                sel.appendChild(opt);
-            });
-
-            if (!cfg.model || !models.find(m => m.id === cfg.model)) {
-                sel.value = models[0].id;
-                cfg.model = models[0].id;
-            } else {
-                sel.value = cfg.model;
+            if (sel) {
+                sel.innerHTML = '';
+                models.forEach(m => {
+                    const opt = document.createElement('option');
+                    opt.value = m.id; opt.textContent = m.name;
+                    if (m.id === cfg.model) opt.selected = true;
+                    sel.appendChild(opt);
+                });
+                if (!cfg.model || !models.find(m => m.id === cfg.model)) {
+                    sel.value = models[0].id;
+                    cfg.model = models[0].id;
+                } else {
+                    sel.value = cfg.model;
+                }
             }
             saveSettings();
 
@@ -476,10 +508,12 @@ ${oldText}
             if (hint) hint.textContent = `共 ${models.length} 个可用模型`;
             if (modelCard) modelCard.style.display = 'block';
             setApiStatus('ok');
+            modelsFetched = true;
             showToast(`连接成功，获取到 ${models.length} 个模型`, 'success');
 
         } catch (err) {
             setApiStatus('err');
+            modelsFetched = false;
             showToast('连接失败：' + err.message, 'error');
         }
 
@@ -487,29 +521,34 @@ ${oldText}
     }
 
     // ────────────────────────────────────────────────────────────────────────
-    // 主润色流程
+    // 主润色流程（修复 #2 颜色还原、#5 按钮禁用）
     // ────────────────────────────────────────────────────────────────────────
     async function runPolish(prompt) {
         if (isStreaming) return;
-        if (!cfg.apiKey)  { showToast('请先在 API 标签页连接 API', 'warning'); return; }
-        if (!cfg.model)   { showToast('请先连接 API 并选择模型',   'warning'); return; }
+        if (!cfg.apiKey) { showToast('请先在 API 标签页连接 API', 'warning'); return; }
+        if (!cfg.model)  { showToast('请先连接 API 并选择模型',   'warning'); return; }
 
-        isStreaming = true;
+        isStreaming   = true;
         currentResult = '';
-        compareOn = false;
 
-        const runBtn      = document.getElementById('tp-run-btn');
-        const loading     = document.getElementById('tp-loading');
-        const resultSec   = document.getElementById('tp-result-section');
-        const resultEl    = document.getElementById('tp-result-content');
-        const diffOverlay = document.getElementById('tp-diff-overlay');
+        const runBtn    = document.getElementById('tp-run-btn');
+        const loading   = document.getElementById('tp-loading');
+        const resultSec = document.getElementById('tp-result-section');
+        const resultEl  = document.getElementById('tp-result-content');
+        const diffOv    = document.getElementById('tp-diff-overlay');
 
-        if (runBtn) { runBtn.disabled = true; runBtn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> 润色中…'; }
-        if (diffOverlay) diffOverlay.style.display = 'none';
+        if (runBtn)  { runBtn.disabled = true; runBtn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> 润色中…'; }
+        if (diffOv)  diffOv.style.display = 'none';
         resultSec.style.display = 'block';
-        loading.style.display = 'flex';
-        resultEl.textContent = '';
-        resultEl.className = 'tp-result-content streaming';
+        loading.style.display   = 'flex';
+
+        // 修复 #2：每次开始前清空颜色和内容
+        resultEl.textContent  = '';
+        resultEl.style.color  = '';
+        resultEl.className    = 'tp-result-content streaming';
+
+        // 修复 #5：流式中禁用操作按钮
+        setResultBtnsDisabled(true);
 
         try {
             await streamApiCall(prompt, chunk => {
@@ -520,117 +559,127 @@ ${oldText}
             setApiStatus('ok');
             showToast('润色完成！', 'success');
         } catch (err) {
-            resultEl.className = 'tp-result-content';
-            resultEl.style.color = '#e74c3c';
-            resultEl.textContent = '❌ 错误：' + err.message;
-            setApiStatus('err');
-            showToast('润色失败：' + err.message, 'error');
+            if (err.name === 'AbortError') {
+                // 用户主动停止
+                resultEl.className = 'tp-result-content';
+                showToast('已停止生成', 'info');
+            } else {
+                resultEl.className   = 'tp-result-content';
+                resultEl.style.color = '#e74c3c';  // 只在真正出错时设红色
+                resultEl.textContent = '❌ 错误：' + err.message;
+                setApiStatus('err');
+                showToast('润色失败：' + err.message, 'error');
+            }
         }
 
         loading.style.display = 'none';
         isStreaming = false;
+        setResultBtnsDisabled(false);
         if (runBtn) { runBtn.disabled = false; runBtn.innerHTML = '<i class="fa-solid fa-wand-magic-sparkles"></i> 开始润色'; }
     }
 
     // ────────────────────────────────────────────────────────────────────────
-    // Diff 相关
+    // Diff 算法（超长文本降级，修复 #8）
     // ────────────────────────────────────────────────────────────────────────
-    function _esc(s) { return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+    const DIFF_TOKEN_LIMIT = 400; // 超过此数量 token 直接整体 diff
+
+    function tokenize(t) {
+        const tokens = []; let cur = '';
+        for (const ch of t) {
+            cur += ch;
+            if (/[，。！？；\n,.!?;：]/.test(ch)) { tokens.push(cur); cur = ''; }
+        }
+        if (cur) tokens.push(cur);
+        return tokens;
+    }
 
     function computeDiff(oldText, newText) {
-        const tokenize = t => {
-            const tokens = []; let cur = '';
-            for (const ch of t) {
-                cur += ch;
-                if (/[，。！？；\n,.!?;：]/.test(ch)) { tokens.push(cur); cur = ''; }
-            }
-            if (cur) tokens.push(cur);
-            return tokens;
-        };
         const A = tokenize(oldText), B = tokenize(newText);
-        const m = A.length, n = B.length;
-        const dp = Array.from({length: m+1}, () => new Array(n+1).fill(0));
-        for (let i=1;i<=m;i++) for (let j=1;j<=n;j++)
-            dp[i][j] = A[i-1]===B[j-1] ? dp[i-1][j-1]+1 : Math.max(dp[i-1][j],dp[i][j-1]);
 
-        let i=m, j=n; const res=[];
-        while (i>0||j>0) {
-            if (i>0&&j>0&&A[i-1]===B[j-1]) { res.unshift({type:'equal',value:A[i-1]}); i--;j--; }
-            else if (j>0&&(i===0||dp[i][j-1]>=dp[i-1][j])) { res.unshift({type:'insert',value:B[j-1]}); j--; }
-            else { res.unshift({type:'delete',value:A[i-1]}); i--; }
+        // 超长降级：直接视为整体替换（修复 #8）
+        if (A.length > DIFF_TOKEN_LIMIT || B.length > DIFF_TOKEN_LIMIT) {
+            return [
+                { type: 'diff', oldText, newText, active: 'new' }
+            ];
         }
 
-        const blocks=[]; let cur=null;
+        const m = A.length, n = B.length;
+        const dp = Array.from({ length: m + 1 }, () => new Array(n + 1).fill(0));
+        for (let i = 1; i <= m; i++)
+            for (let j = 1; j <= n; j++)
+                dp[i][j] = A[i-1] === B[j-1] ? dp[i-1][j-1] + 1 : Math.max(dp[i-1][j], dp[i][j-1]);
+
+        let i = m, j = n; const res = [];
+        while (i > 0 || j > 0) {
+            if (i > 0 && j > 0 && A[i-1] === B[j-1]) { res.unshift({ type: 'equal', value: A[i-1] }); i--; j--; }
+            else if (j > 0 && (i === 0 || dp[i][j-1] >= dp[i-1][j])) { res.unshift({ type: 'insert', value: B[j-1] }); j--; }
+            else { res.unshift({ type: 'delete', value: A[i-1] }); i--; }
+        }
+
+        const blocks = []; let cur = null;
         res.forEach(r => {
-            if (r.type==='equal') { if(cur){blocks.push(cur);cur=null;} blocks.push({type:'equal',value:r.value}); }
-            else {
-                if(!cur) cur={type:'diff',oldText:'',newText:'',active:'new'};
-                if(r.type==='delete') cur.oldText+=r.value;
-                if(r.type==='insert') cur.newText+=r.value;
+            if (r.type === 'equal') {
+                if (cur) { blocks.push(cur); cur = null; }
+                blocks.push({ type: 'equal', value: r.value });
+            } else {
+                if (!cur) cur = { type: 'diff', oldText: '', newText: '', active: 'new' };
+                if (r.type === 'delete') cur.oldText += r.value;
+                if (r.type === 'insert') cur.newText += r.value;
             }
         });
-        if(cur) blocks.push(cur);
+        if (cur) blocks.push(cur);
         return blocks;
     }
 
     function renderDiff(oldText, newText) {
         diffBlocks = computeDiff(oldText, newText);
-        let html='';
-        diffBlocks.forEach((b,idx) => {
-            if(b.type==='equal') {
+        let html = '';
+        diffBlocks.forEach((b, idx) => {
+            if (b.type === 'equal') {
                 html += `<span class="tp-idiff-equal" data-idx="${idx}">${_esc(b.value)}</span>`;
             } else {
                 html += `<span class="tp-diff-group" data-index="${idx}">`;
-                if(b.oldText) html += `<span class="tp-idiff-old ${b.active==='old'?'active':'inactive'}" data-idx="${idx}" title="点击保留原文">${_esc(b.oldText)}</span>`;
-                if(b.newText) html += `<span class="tp-idiff-new ${b.active==='new'?'active':'inactive'}" data-idx="${idx}" title="点击保留新版">${_esc(b.newText)}</span>`;
+                if (b.oldText) html += `<span class="tp-idiff-old ${b.active === 'old' ? 'active' : 'inactive'}" data-idx="${idx}" title="点击保留原文">${_esc(b.oldText)}</span>`;
+                if (b.newText) html += `<span class="tp-idiff-new ${b.active === 'new' ? 'active' : 'inactive'}" data-idx="${idx}" title="点击保留新版">${_esc(b.newText)}</span>`;
                 html += '</span>';
             }
         });
         const merge = document.getElementById('tp-diff-merge');
         if (merge) {
             merge.innerHTML = html;
-            merge.className = 'tp-diff-merge-view';
+            merge.className = 'tp-diff-merge-view'; // 清除 mode 类名
         }
         document.querySelectorAll('.tp-diff-mode-btn').forEach(b => b.classList.remove('active'));
         const overlay = document.getElementById('tp-diff-overlay');
         if (overlay) overlay.style.display = 'flex';
     }
 
+    // 组装最终结果（contenteditable=false，从 diffBlocks 读取，修复 #3）
     function assembleDiff() {
-        // 先从 DOM 同步编辑内容
-        document.querySelectorAll('#tp-diff-merge .tp-idiff-equal').forEach(el => {
-            const idx = parseInt(el.dataset.idx);
-            if (!isNaN(idx) && diffBlocks[idx]) diffBlocks[idx].value = el.textContent;
-        });
-        document.querySelectorAll('#tp-diff-merge .tp-idiff-old.active').forEach(el => {
-            const idx = parseInt(el.dataset.idx);
-            if (!isNaN(idx) && diffBlocks[idx]) diffBlocks[idx].oldText = el.textContent;
-        });
-        document.querySelectorAll('#tp-diff-merge .tp-idiff-new.active').forEach(el => {
-            const idx = parseInt(el.dataset.idx);
-            if (!isNaN(idx) && diffBlocks[idx]) diffBlocks[idx].newText = el.textContent;
-        });
-
         return diffBlocks.map(b => {
-            if (b.type==='equal') return b.value;
-            return b.active==='old' ? b.oldText : b.newText;
+            if (b.type === 'equal') return b.value;
+            return b.active === 'old' ? b.oldText : b.newText;
         }).join('');
     }
 
     // ────────────────────────────────────────────────────────────────────────
-    // 导入最新 AI 消息
+    // 导入最新 AI 消息（修复 #9 XSS 清理）
     // ────────────────────────────────────────────────────────────────────────
     function importLastMessage() {
         try {
-            const ctx = SillyTavern.getContext();
+            const ctx  = SillyTavern.getContext();
             const chat = ctx.chat;
             if (!chat?.length) { showToast('当前没有聊天消息', 'warning'); return; }
-            for (let i=chat.length-1; i>=0; i--) {
+            for (let i = chat.length - 1; i >= 0; i--) {
                 if (!chat[i].is_user && chat[i].mes) {
                     const tmp = document.createElement('div');
-                    tmp.innerHTML = chat[i].mes;
+                    // 用 DOMPurify（ST 内置）清理后再赋值（修复 #9）
+                    const raw = chat[i].mes;
+                    tmp.innerHTML = typeof DOMPurify !== 'undefined'
+                        ? DOMPurify.sanitize(raw, { ALLOWED_TAGS: [] })
+                        : raw.replace(/<[^>]*>/g, '');
                     const input = document.getElementById('tp-input');
-                    if (input) { input.value = tmp.textContent || chat[i].mes; updateCharCount(); }
+                    if (input) { input.value = tmp.textContent || raw; updateCharCount(); }
                     showToast('已导入最新 AI 消息', 'success');
                     return;
                 }
@@ -640,36 +689,43 @@ ${oldText}
     }
 
     // ────────────────────────────────────────────────────────────────────────
-    // 恢复 UI 状态
+    // 恢复 UI 到已保存状态
     // ────────────────────────────────────────────────────────────────────────
     function restoreUI() {
         const s = id => document.getElementById(id);
-        if (s('tp-api-url')) s('tp-api-url').value = cfg.apiUrl || '';
-        if (s('tp-api-key')) s('tp-api-key').value = cfg.apiKey || '';
-        if (s('tp-intensity')) s('tp-intensity').value = cfg.intensity || 3;
-        if (s('tp-intensity-label')) s('tp-intensity-label').textContent = INTENSITY_LABEL[cfg.intensity] || '均衡';
-        document.querySelectorAll('.tp-chip').forEach(c => c.classList.toggle('active', c.dataset.style === cfg.style));
+        if (s('tp-api-url'))       s('tp-api-url').value       = cfg.apiUrl || '';
+        if (s('tp-api-key'))       s('tp-api-key').value       = cfg.apiKey || '';
+        if (s('tp-extra-note'))    s('tp-extra-note').value    = cfg.extraNote || '';
+        if (s('tp-intensity'))     s('tp-intensity').value     = cfg.intensity || 3;
+        if (s('tp-intensity-label')) s('tp-intensity-label').textContent = (INTENSITY[cfg.intensity] || INTENSITY[3]).label;
+
+        document.querySelectorAll('.tp-chip').forEach(c =>
+            c.classList.toggle('active', c.dataset.style === cfg.style));
         const customBox = s('tp-custom-style-box');
         if (customBox) customBox.style.display = cfg.style === 'custom' ? 'block' : 'none';
         if (s('tp-custom-style')) s('tp-custom-style').value = cfg.customStyle || '';
 
-        if (cfg.apiKey && cfg.apiUrl) {
-            // 有历史连接，自动重连拉取模型
-            connectAndFetchModels();
+        // 修复 #6：有保存的连接信息且本次会话尚未拉取过，才自动重连
+        if (!modelsFetched && cfg.apiKey && cfg.apiUrl) {
+            connectAndFetchModels(false);
+        } else if (modelsFetched) {
+            setApiStatus('ok');
+            const mc = s('tp-model-card');
+            if (mc) mc.style.display = 'block';
         } else {
             setApiStatus('idle');
         }
     }
 
     // ────────────────────────────────────────────────────────────────────────
-    // 弹窗绑定事件
+    // 弹窗内事件绑定
     // ────────────────────────────────────────────────────────────────────────
     function bindPopupEvents() {
-        const on  = (id, ev, fn) => { const el=document.getElementById(id); if(el) el.addEventListener(ev,fn); };
+        const on  = (id, ev, fn) => { const el = document.getElementById(id); if (el) el.addEventListener(ev, fn); };
         const onQ = (sel, ev, fn) => document.querySelectorAll(sel).forEach(el => el.addEventListener(ev, fn));
 
         // Tab 切换
-        onQ('.tp-tab', 'click', function() {
+        onQ('.tp-tab', 'click', function () {
             document.querySelectorAll('.tp-tab').forEach(t => t.classList.remove('active'));
             document.querySelectorAll('.tp-view').forEach(v => v.classList.remove('active'));
             this.classList.add('active');
@@ -678,7 +734,7 @@ ${oldText}
         });
 
         // 风格芯片
-        onQ('.tp-chip', 'click', function() {
+        onQ('.tp-chip', 'click', function () {
             document.querySelectorAll('.tp-chip').forEach(c => c.classList.remove('active'));
             this.classList.add('active');
             cfg.style = this.dataset.style;
@@ -687,35 +743,42 @@ ${oldText}
             saveSettings();
         });
 
-        on('tp-custom-style',  'input',  function() { cfg.customStyle = this.value; saveSettings(); });
+        on('tp-custom-style', 'input', function () { cfg.customStyle = this.value; saveSettings(); });
 
         // 强度滑块
-        on('tp-intensity', 'input', function() {
+        on('tp-intensity', 'input', function () {
             cfg.intensity = parseInt(this.value);
             const lbl = document.getElementById('tp-intensity-label');
-            if (lbl) lbl.textContent = INTENSITY_LABEL[cfg.intensity] || '均衡';
+            if (lbl) lbl.textContent = (INTENSITY[cfg.intensity] || INTENSITY[3]).label;
             saveSettings();
         });
 
         // 预设标签
-        onQ('.tp-preset-tag', 'click', function() {
+        onQ('.tp-preset-tag', 'click', function () {
             const p = this.dataset.preset;
             if (selPresets.has(p)) { selPresets.delete(p); this.classList.remove('active'); }
             else                   { selPresets.add(p);    this.classList.add('active'); }
         });
 
+        // 额外说明（存入 cfg，修复 #10）
+        on('tp-extra-note', 'input', function () { cfg.extraNote = this.value; saveSettings(); });
+
         // 输入框字数
         on('tp-input', 'input', updateCharCount);
 
-        // 连接按钮
-        on('tp-connect-btn', 'click', connectAndFetchModels);
+        // 连接（force=true）
+        on('tp-connect-btn', 'click', () => {
+            // 保存当前输入框的值到 cfg（手动触发时刷新）
+            const urlEl = document.getElementById('tp-api-url');
+            const keyEl = document.getElementById('tp-api-key');
+            if (urlEl) cfg.apiUrl = urlEl.value.trim();
+            if (keyEl) cfg.apiKey = keyEl.value.trim();
+            connectAndFetchModels(true);
+        });
 
-        // API 输入保存
-        on('tp-api-url', 'change', function() { cfg.apiUrl = this.value.trim(); saveSettings(); });
-        on('tp-api-key', 'change', function() { cfg.apiKey = this.value.trim(); saveSettings(); });
-
-        // 模型选择
-        on('tp-model-select', 'change', function() { cfg.model = this.value; saveSettings(); });
+        on('tp-api-url', 'change', function () { cfg.apiUrl = this.value.trim(); saveSettings(); });
+        on('tp-api-key', 'change', function () { cfg.apiKey = this.value.trim(); saveSettings(); });
+        on('tp-model-select', 'change', function () { cfg.model = this.value; saveSettings(); });
 
         // 导入消息
         on('tp-import-btn', 'click', importLastMessage);
@@ -730,27 +793,30 @@ ${oldText}
             currentResult = '';
         });
 
+        // 停止生成
+        on('tp-stop-btn', 'click', () => { abortController?.abort(); });
+
         // 开始润色
         on('tp-run-btn', 'click', () => {
             const inputEl = document.getElementById('tp-input');
-            const text = inputEl?.value?.trim();
+            const text    = inputEl?.value?.trim();
             if (!text) { showToast('请输入要润色的文字', 'warning'); return; }
             inputSnapshot = text;
             runPolish(buildPolishPrompt(text));
         });
 
-        // 再次润色（把结果放回输入框）
+        // 再次润色
         on('tp-reuse-btn', 'click', () => {
             if (!currentResult) return;
             const el = document.getElementById('tp-input');
             if (el) { el.value = currentResult; updateCharCount(); }
             const rs = document.getElementById('tp-result-section');
             if (rs) rs.style.display = 'none';
+            inputSnapshot = currentResult;
             currentResult = '';
-            inputSnapshot = el.value;
         });
 
-        // 复制结果
+        // 复制
         on('tp-copy-btn', 'click', () => {
             if (!currentResult) return;
             navigator.clipboard.writeText(currentResult)
@@ -768,22 +834,22 @@ ${oldText}
             } else { showToast('找不到 ST 输入框', 'warning'); }
         });
 
-        // 对比视图按钮
+        // 对比视图
         on('tp-compare-btn', 'click', () => {
             if (!currentResult || !inputSnapshot) { showToast('暂无可对比的内容', 'warning'); return; }
             renderDiff(inputSnapshot, currentResult);
-            document.getElementById('tp-compare-btn').textContent = '退出对比';
         });
 
         // 润色意见
         on('tp-refine-btn', 'click', async () => {
             if (isStreaming) return;
-            const refineEl = document.getElementById('tp-refine-input');
+            const refineEl    = document.getElementById('tp-refine-input');
             const instruction = refineEl?.value?.trim();
             if (!instruction) { showToast('请输入修改意见', 'warning'); return; }
             if (!currentResult) { showToast('没有可润色的结果', 'warning'); return; }
-            lastRefineReq = instruction;
-            const oldText = currentResult;
+            lastRefineReq     = instruction;
+            const oldText     = currentResult;
+            inputSnapshot     = oldText;
             await runPolish(buildRefinePrompt(oldText, instruction));
             if (currentResult && currentResult !== oldText) {
                 renderDiff(oldText, currentResult);
@@ -792,54 +858,66 @@ ${oldText}
         });
 
         // Diff 模式按钮
-        onQ('.tp-diff-mode-btn', 'click', function() {
+        onQ('.tp-diff-mode-btn', 'click', function () {
             const merge = document.getElementById('tp-diff-merge');
             if (!merge) return;
             if (this.classList.contains('active')) {
                 this.classList.remove('active');
                 merge.className = 'tp-diff-merge-view';
+                const hint = document.getElementById('tp-diff-hint');
+                if (hint) hint.style.display = '';
                 return;
             }
             document.querySelectorAll('.tp-diff-mode-btn').forEach(b => b.classList.remove('active'));
             this.classList.add('active');
             merge.className = 'tp-diff-merge-view tp-diff-mode-' + this.dataset.mode;
+            const hint = document.getElementById('tp-diff-hint');
+            if (hint) hint.style.display = 'none';
         });
 
-        // Diff 片段点击切换
-        document.getElementById('tp-diff-merge')?.addEventListener('click', function(e) {
-            const el = e.target;
-            if (!this.classList.contains('tp-diff-merge-view') || this.className.includes('tp-diff-mode-')) return;
-            const idx = parseInt(el.dataset.idx);
-            if (isNaN(idx) || !diffBlocks[idx]) return;
-            if (el.classList.contains('tp-idiff-old') && !el.classList.contains('active')) {
-                diffBlocks[idx].active = 'old';
-                el.classList.add('active'); el.classList.remove('inactive');
-                el.nextElementSibling?.classList.add('inactive'); el.nextElementSibling?.classList.remove('active');
-            } else if (el.classList.contains('tp-idiff-new') && !el.classList.contains('active')) {
-                diffBlocks[idx].active = 'new';
-                el.classList.add('active'); el.classList.remove('inactive');
-                el.previousElementSibling?.classList.add('inactive'); el.previousElementSibling?.classList.remove('active');
-            }
-        });
+        // Diff 片段点击切换（修复 #4：判断逻辑）
+        const mergeEl = document.getElementById('tp-diff-merge');
+        if (mergeEl) {
+            mergeEl.addEventListener('click', function (e) {
+                const el = e.target;
+                // 修复 #4：有 mode 类名时处于筛选模式，不允许交互
+                if (this.className.includes('tp-diff-mode-')) return;
+
+                const idx = parseInt(el.dataset.idx);
+                if (isNaN(idx) || !diffBlocks[idx] || diffBlocks[idx].type !== 'diff') return;
+
+                if (el.classList.contains('tp-idiff-old') && !el.classList.contains('active')) {
+                    diffBlocks[idx].active = 'old';
+                    el.classList.add('active');    el.classList.remove('inactive');
+                    const sibling = el.nextElementSibling;
+                    if (sibling?.classList.contains('tp-idiff-new')) {
+                        sibling.classList.add('inactive'); sibling.classList.remove('active');
+                    }
+                } else if (el.classList.contains('tp-idiff-new') && !el.classList.contains('active')) {
+                    diffBlocks[idx].active = 'new';
+                    el.classList.add('active');    el.classList.remove('inactive');
+                    const sibling = el.previousElementSibling;
+                    if (sibling?.classList.contains('tp-idiff-old')) {
+                        sibling.classList.add('inactive'); sibling.classList.remove('active');
+                    }
+                }
+            });
+        }
 
         // Diff 放弃
         on('tp-diff-cancel', 'click', () => {
             const overlay = document.getElementById('tp-diff-overlay');
             if (overlay) overlay.style.display = 'none';
-            const compareBtn = document.getElementById('tp-compare-btn');
-            if (compareBtn) compareBtn.textContent = '对比视图';
         });
 
         // Diff 应用
         on('tp-diff-confirm', 'click', () => {
-            const final = assembleDiff();
-            currentResult = final;
+            const final    = assembleDiff();
+            currentResult  = final;
             const resultEl = document.getElementById('tp-result-content');
             if (resultEl) { resultEl.textContent = final; resultEl.style.color = ''; }
-            const overlay = document.getElementById('tp-diff-overlay');
+            const overlay  = document.getElementById('tp-diff-overlay');
             if (overlay) overlay.style.display = 'none';
-            const compareBtn = document.getElementById('tp-compare-btn');
-            if (compareBtn) compareBtn.textContent = '对比视图';
             showToast('修改已应用', 'success');
         });
 
@@ -853,34 +931,43 @@ ${oldText}
     }
 
     // ────────────────────────────────────────────────────────────────────────
-    // 打开弹窗
+    // 打开弹窗（修复 #1：先移除旧降级弹窗）
     // ────────────────────────────────────────────────────────────────────────
     async function openPopup() {
         loadSettings();
+
+        // 修复 #1：移除旧降级弹窗，防止重复绑定
+        document.getElementById('tp-fallback-overlay')?.remove();
+
         const html = buildPopupHtml();
 
-        // callPopup 是 ST 内置函数，wide+large 为标准参数
         if (typeof callPopup === 'function') {
             callPopup(html, 'text', '', { wide: true, large: true, okButton: 'Close' });
         } else {
-            // 降级：直接插入 DOM
             const overlay = document.createElement('div');
-            overlay.id = 'tp-fallback-overlay';
+            overlay.id    = 'tp-fallback-overlay';
             overlay.style.cssText = 'position:fixed;inset:0;z-index:9999;background:rgba(0,0,0,0.6);display:flex;align-items:center;justify-content:center;';
             const box = document.createElement('div');
-            box.style.cssText = 'width:90%;max-width:700px;max-height:90vh;background:var(--SmartThemeBodyColor2,#1e1e2e);border-radius:12px;overflow:hidden;display:flex;flex-direction:column;';
+            box.style.cssText = 'width:90%;max-width:700px;max-height:90vh;background:var(--SmartThemeBodyColor2,#1e1e2e);border-radius:12px;overflow:hidden;display:flex;flex-direction:column;position:relative;';
             box.innerHTML = html;
             const closeBtn = document.createElement('button');
             closeBtn.textContent = '关闭';
-            closeBtn.style.cssText = 'margin:8px 16px;padding:7px;border-radius:6px;border:1px solid;cursor:pointer;background:transparent;color:inherit;';
-            closeBtn.onclick = () => overlay.remove();
+            closeBtn.style.cssText = 'margin:8px 16px 12px;padding:7px;border-radius:6px;border:1px solid var(--SmartThemeBorderColor,#555);cursor:pointer;background:transparent;color:inherit;';
+            closeBtn.onclick = () => {
+                abortController?.abort();
+                overlay.remove();
+            };
             box.appendChild(closeBtn);
             overlay.appendChild(box);
-            overlay.addEventListener('click', e => { if (e.target === overlay) overlay.remove(); });
+            overlay.addEventListener('click', e => {
+                if (e.target === overlay) {
+                    abortController?.abort();
+                    overlay.remove();
+                }
+            });
             document.body.appendChild(overlay);
         }
 
-        // 等 DOM 渲染完毕
         await new Promise(r => setTimeout(r, 80));
 
         restoreUI();
@@ -889,23 +976,23 @@ ${oldText}
     }
 
     // ────────────────────────────────────────────────────────────────────────
-    // 魔棒按钮（挂到 ST 输入区上方）
+    // 魔棒按钮（修复 #15：移除错误挂载目标 .mes_text）
     // ────────────────────────────────────────────────────────────────────────
     function addWandButton() {
         if (document.getElementById(WAND_BTN_ID)) return;
 
         const btn = document.createElement('div');
-        btn.id = WAND_BTN_ID;
+        btn.id    = WAND_BTN_ID;
         btn.innerHTML = '<i class="fa-solid fa-wand-magic-sparkles"></i> 文字润色';
         btn.title = '打开文字润色工坊';
         btn.addEventListener('click', openPopup);
 
-        // 挂载到 send_form 上方（ST 标准输入区容器）
+        // 修复 #15：只挂载到正确的输入区容器，移除 .mes_text:last-child
         const targets = [
             '#send_form',
             '#chat_input_area',
-            '.mes_text:last-child',
             '#rightSendForm',
+            '#send_textarea', // 最后备选：直接挂到 textarea 前
         ];
         let mounted = false;
         for (const sel of targets) {
@@ -916,17 +1003,18 @@ ${oldText}
                 break;
             }
         }
-        if (!mounted) document.body.appendChild(btn);
+        if (!mounted) {
+            // 实在找不到就挂到 body 底部，至少能用
+            document.body.appendChild(btn);
+        }
     }
 
     // ────────────────────────────────────────────────────────────────────────
-    // 全局事件绑定（只执行一次）
+    // 全局事件（只绑一次）
     // ────────────────────────────────────────────────────────────────────────
     function bindGlobalEvents() {
         if (evBound) return;
         evBound = true;
-
-        // 监听 ST 面板重置事件，确保按钮不丢失
         if (typeof SillyTavern !== 'undefined' && SillyTavern.getContext) {
             try {
                 const ctx = SillyTavern.getContext();
@@ -945,7 +1033,7 @@ ${oldText}
         loadSettings();
         addWandButton();
         bindGlobalEvents();
-        console.log('[文字润色工坊] v2.0 加载完成 ✓');
+        console.log('[文字润色工坊] v2.1 加载完成 ✓');
     }
 
     if (document.readyState === 'loading') {

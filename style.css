@@ -1,5 +1,5 @@
 /* ══════════════════════════════════════════════
-   文字润色工坊 · SillyTavern Extension v2.0
+   文字润色工坊 · SillyTavern Extension v2.1
    ══════════════════════════════════════════════ */
 
 /* ── 弹窗整体包装 ── */
@@ -13,7 +13,7 @@
     overflow: hidden;
 }
 
-/* ── 顶部标签页导航 ── */
+/* ── 顶部标签页 ── */
 .tp-tabs {
     display: flex;
     gap: 2px;
@@ -33,12 +33,8 @@
     transition: all 0.15s;
     user-select: none;
 }
-.tp-tab:hover { opacity: 0.9; }
-.tp-tab.active {
-    opacity: 1;
-    border-bottom-color: var(--SmartThemeQuoteColor);
-    color: var(--SmartThemeQuoteColor);
-}
+.tp-tab:hover  { opacity: 0.9; }
+.tp-tab.active { opacity: 1; border-bottom-color: var(--SmartThemeQuoteColor); color: var(--SmartThemeQuoteColor); }
 
 /* ── 视图区 ── */
 .tp-view { display: none; flex-direction: column; flex: 1; overflow: hidden; }
@@ -55,7 +51,7 @@
 .tp-scroll::-webkit-scrollbar { width: 4px; }
 .tp-scroll::-webkit-scrollbar-thumb { background: var(--SmartThemeBorderColor); border-radius: 2px; }
 
-/* ── 卡片分区 ── */
+/* ── 卡片 ── */
 .tp-card {
     background: var(--SmartThemeBlurTintColor, transparent);
     border: 1px solid var(--SmartThemeBorderColor);
@@ -89,12 +85,7 @@
     margin-bottom: 8px;
 }
 .tp-row:last-child { margin-bottom: 0; }
-.tp-label {
-    font-size: 0.82rem;
-    opacity: 0.75;
-    white-space: nowrap;
-    min-width: 60px;
-}
+.tp-label { font-size: 0.82rem; opacity: 0.75; white-space: nowrap; min-width: 60px; }
 
 /* ── 输入控件 ── */
 .tp-input {
@@ -109,6 +100,7 @@
     outline: none;
     transition: border-color 0.15s;
     width: 100%;
+    box-sizing: border-box;
 }
 .tp-input:focus { border-color: var(--SmartThemeQuoteColor); }
 .tp-input[type="password"] { letter-spacing: 2px; }
@@ -125,6 +117,7 @@
     outline: none;
     cursor: pointer;
     width: 100%;
+    box-sizing: border-box;
 }
 
 .tp-textarea {
@@ -165,36 +158,22 @@
     white-space: nowrap;
     user-select: none;
 }
-.tp-btn:hover { filter: brightness(1.1); }
-.tp-btn:active { transform: scale(0.97); }
-.tp-btn:disabled { opacity: 0.4; cursor: not-allowed; transform: none !important; }
+.tp-btn:hover   { filter: brightness(1.1); }
+.tp-btn:active  { transform: scale(0.97); }
+.tp-btn:disabled { opacity: 0.4; cursor: not-allowed; transform: none !important; filter: none !important; }
 
-.tp-btn-primary {
-    background: var(--SmartThemeQuoteColor);
-    border-color: var(--SmartThemeQuoteColor);
-    color: #fff;
-}
+.tp-btn-primary { background: var(--SmartThemeQuoteColor); border-color: var(--SmartThemeQuoteColor); color: #fff; }
 .tp-btn-primary:hover { filter: brightness(1.15); }
 
-.tp-btn-ghost {
-    background: transparent;
-    border-color: var(--SmartThemeBorderColor);
-}
+.tp-btn-ghost { background: transparent; border-color: var(--SmartThemeBorderColor); }
 .tp-btn-ghost:hover { border-color: var(--SmartThemeQuoteColor); color: var(--SmartThemeQuoteColor); }
 
-.tp-btn-danger {
-    background: rgba(231,76,60,0.12);
-    border-color: rgba(231,76,60,0.4);
-    color: #e74c3c;
-}
-.tp-btn-danger:hover { background: rgba(231,76,60,0.2); }
+.tp-btn-danger { background: rgba(231,76,60,0.12); border-color: rgba(231,76,60,0.4); color: #e74c3c; }
+.tp-btn-danger:hover { background: rgba(231,76,60,0.22); }
 
-.tp-btn-icon {
-    padding: 7px 10px;
-    flex-shrink: 0;
-}
+.tp-btn-icon { padding: 7px 10px; flex-shrink: 0; }
 
-/* ── API 状态标签 ── */
+/* ── API 状态 ── */
 .tp-api-status {
     font-size: 0.78rem;
     padding: 3px 10px;
@@ -204,12 +183,12 @@
     display: inline-block;
     margin-top: 6px;
 }
-.tp-api-status.idle { color: var(--SmartThemeBodyColor); border-color: var(--SmartThemeBorderColor); opacity: 0.6; }
+.tp-api-status.idle       { color: var(--SmartThemeBodyColor); border-color: var(--SmartThemeBorderColor); opacity: 0.6; }
 .tp-api-status.connecting { color: #f0ad4e; border-color: rgba(240,173,78,0.5); }
-.tp-api-status.ok { color: #5cb85c; border-color: rgba(92,184,92,0.5); }
-.tp-api-status.err { color: #e74c3c; border-color: rgba(231,76,60,0.5); }
+.tp-api-status.ok         { color: #5cb85c; border-color: rgba(92,184,92,0.5); }
+.tp-api-status.err        { color: #e74c3c; border-color: rgba(231,76,60,0.5); }
 
-/* ── 风格芯片网格 ── */
+/* ── 风格芯片 ── */
 .tp-style-grid {
     display: grid;
     grid-template-columns: repeat(3, 1fr);
@@ -232,6 +211,8 @@
 .tp-chip:hover { border-color: var(--SmartThemeQuoteColor); opacity: 0.9; }
 .tp-chip.active {
     border-color: var(--SmartThemeQuoteColor);
+    /* 修复 #13：提供 color-mix fallback */
+    background: rgba(128,128,255,0.14);
     background: color-mix(in srgb, var(--SmartThemeQuoteColor) 14%, transparent);
 }
 .tp-chip-icon { font-size: 1.15rem; line-height: 1; }
@@ -244,20 +225,9 @@
     align-items: center;
     gap: 8px;
 }
-.tp-intensity-row input[type="range"] {
-    flex: 1;
-    cursor: pointer;
-    accent-color: var(--SmartThemeQuoteColor);
-}
+.tp-intensity-row input[type="range"] { flex: 1; cursor: pointer; accent-color: var(--SmartThemeQuoteColor); }
 .tp-intensity-tip { font-size: 0.75rem; opacity: 0.55; white-space: nowrap; }
-.tp-intensity-val {
-    font-size: 0.82rem;
-    font-weight: 600;
-    color: var(--SmartThemeQuoteColor);
-    min-width: 54px;
-    text-align: right;
-    white-space: nowrap;
-}
+.tp-intensity-val { font-size: 0.82rem; font-weight: 600; color: var(--SmartThemeQuoteColor); min-width: 54px; text-align: right; white-space: nowrap; }
 
 /* ── 预设标签 ── */
 .tp-preset-row { display: flex; flex-wrap: wrap; gap: 6px; }
@@ -275,6 +245,7 @@
 .tp-preset-tag.active {
     border-color: var(--SmartThemeQuoteColor);
     color: var(--SmartThemeQuoteColor);
+    background: rgba(128,128,255,0.10);
     background: color-mix(in srgb, var(--SmartThemeQuoteColor) 10%, transparent);
 }
 
@@ -292,7 +263,7 @@
     flex-shrink: 0;
     flex-wrap: wrap;
 }
-.tp-footer-left { display: flex; gap: 6px; }
+.tp-footer-left  { display: flex; gap: 6px; }
 .tp-footer-right { display: flex; gap: 6px; margin-left: auto; }
 
 /* ── 结果区 ── */
@@ -314,7 +285,7 @@
     align-items: center;
     gap: 6px;
 }
-.tp-result-actions { display: flex; gap: 5px; flex-wrap: wrap; }
+.tp-result-actions { display: flex; gap: 5px; flex-wrap: wrap; align-items: center; }
 
 /* ── 加载动画 ── */
 .tp-loading {
@@ -335,11 +306,11 @@
 .tp-loading span:nth-child(3) { animation-delay: 0.30s; }
 .tp-loading em { margin-left: 4px; font-style: normal; }
 @keyframes tpBounce {
-    0%,100% { transform: translateY(0); opacity:0.5; }
-    50%      { transform: translateY(-5px); opacity:1; }
+    0%,100% { transform: translateY(0); opacity: 0.5; }
+    50%      { transform: translateY(-5px); opacity: 1; }
 }
 
-/* ── 结果文本内容 ── */
+/* ── 结果内容 ── */
 .tp-result-content {
     line-height: 1.85;
     font-size: 0.92rem;
@@ -353,21 +324,20 @@
     color: var(--SmartThemeQuoteColor);
     animation: tpCaret 0.7s infinite;
 }
-@keyframes tpCaret { 0%,100%{opacity:1} 50%{opacity:0} }
+@keyframes tpCaret { 0%,100%{ opacity:1; } 50%{ opacity:0; } }
 
-/* ── 润色意见输入区 ── */
-.tp-refine-area {
-    display: flex;
-    gap: 6px;
-    margin-top: 8px;
-    align-items: flex-end;
-}
-.tp-refine-input {
-    flex: 1;
-    resize: none;
-    min-height: 36px;
-    max-height: 100px;
-}
+/* ── 润色意见输入 ── */
+.tp-refine-area { display: flex; gap: 6px; margin-top: 8px; align-items: flex-end; }
+.tp-refine-input { flex: 1; resize: none; min-height: 36px; max-height: 100px; }
+
+/* ── 分割线 ── */
+.tp-divider { height: 1px; background: var(--SmartThemeBorderColor); margin: 8px 0; opacity: 0.5; }
+
+/* ── hint ── */
+.tp-hint { font-size: 0.76rem; opacity: 0.5; font-weight: 400; text-transform: none; letter-spacing: 0; }
+
+/* ── 相对容器 ── */
+.tp-relative { position: relative; overflow: hidden; }
 
 /* ══════════════════════════════════════════════
    Diff 对比视图
@@ -392,11 +362,8 @@
     flex-shrink: 0;
     flex-wrap: wrap;
 }
-.tp-diff-hint {
-    font-size: 0.8rem;
-    opacity: 0.6;
-    flex: 1;
-}
+.tp-diff-hint { font-size: 0.8rem; opacity: 0.6; flex: 1; }
+
 .tp-diff-mode-btn {
     padding: 5px 12px;
     border-radius: 5px;
@@ -409,9 +376,11 @@
     align-items: center;
     gap: 5px;
     transition: all 0.15s;
+    font-family: inherit;
 }
 .tp-diff-mode-btn:hover { border-color: var(--SmartThemeQuoteColor); }
 .tp-diff-mode-btn.active {
+    background: rgba(128,128,255,0.18);
     background: color-mix(in srgb, var(--SmartThemeQuoteColor) 18%, transparent);
     border-color: var(--SmartThemeQuoteColor);
     color: var(--SmartThemeQuoteColor);
@@ -431,10 +400,12 @@
     font-family: 'Noto Serif SC', 'Noto Serif', serif;
     white-space: pre-wrap;
     outline: none;
+    cursor: default;
 }
 
-/* Diff 行内片段 */
+/* Diff 片段 */
 .tp-idiff-equal { color: var(--SmartThemeBodyColor); }
+
 .tp-idiff-old {
     background: rgba(231,76,60,0.18);
     color: #e74c3c;
@@ -444,12 +415,9 @@
     cursor: pointer;
     transition: all 0.12s;
 }
-.tp-idiff-old.active {
-    text-decoration: none;
-    background: rgba(231,76,60,0.25);
-    outline: 1px solid rgba(231,76,60,0.5);
-}
+.tp-idiff-old.active   { text-decoration: none; background: rgba(231,76,60,0.28); outline: 1px solid rgba(231,76,60,0.55); }
 .tp-idiff-old.inactive { opacity: 0.35; }
+
 .tp-idiff-new {
     background: rgba(92,184,92,0.18);
     color: #5cb85c;
@@ -458,19 +426,16 @@
     cursor: pointer;
     transition: all 0.12s;
 }
-.tp-idiff-new.active {
-    background: rgba(92,184,92,0.28);
-    outline: 1px solid rgba(92,184,92,0.5);
-}
+.tp-idiff-new.active   { background: rgba(92,184,92,0.30); outline: 1px solid rgba(92,184,92,0.55); }
 .tp-idiff-new.inactive { opacity: 0.35; }
 
-/* 视图模式过滤 */
+/* 视图过滤 */
 .tp-diff-mode-old .tp-idiff-new  { display: none; }
 .tp-diff-mode-new .tp-idiff-old  { display: none; }
-.tp-diff-mode-final .tp-idiff-old.inactive { display: none; }
+.tp-diff-mode-final .tp-idiff-old.inactive,
 .tp-diff-mode-final .tp-idiff-new.inactive { display: none; }
-.tp-diff-mode-final .tp-idiff-old.active { text-decoration: none; background:transparent; outline:none; color:inherit; }
-.tp-diff-mode-final .tp-idiff-new.active { background:transparent; outline:none; color:inherit; }
+.tp-diff-mode-final .tp-idiff-old.active,
+.tp-diff-mode-final .tp-idiff-new.active   { text-decoration: none; background: transparent; outline: none; color: inherit; }
 
 .tp-diff-actions {
     display: flex;
@@ -481,22 +446,25 @@
     flex-shrink: 0;
 }
 
-/* ── 魔棒触发按钮（输入框上方） ── */
+/* ══════════════════════════════════════════════
+   魔棒触发按钮
+   ══════════════════════════════════════════════ */
 #tp-wand-btn {
     display: inline-flex;
     align-items: center;
     gap: 5px;
     font-size: 0.82rem;
-    padding: 4px 10px;
+    padding: 4px 11px;
     border-radius: 5px;
     cursor: pointer;
     border: 1px solid var(--SmartThemeBorderColor);
     background: transparent;
     color: var(--SmartThemeBodyColor);
-    opacity: 0.7;
+    opacity: 0.72;
     transition: all 0.15s;
     margin-bottom: 4px;
     user-select: none;
+    font-family: inherit;
 }
 #tp-wand-btn:hover {
     opacity: 1;
@@ -504,26 +472,9 @@
     color: var(--SmartThemeQuoteColor);
 }
 
-/* ── 相对容器（为 diff overlay 定位） ── */
-.tp-relative { position: relative; overflow: hidden; }
-
-/* ── 分割线 ── */
-.tp-divider {
-    height: 1px;
-    background: var(--SmartThemeBorderColor);
-    margin: 6px 0;
-    opacity: 0.5;
-}
-
-/* ── hint 文字 ── */
-.tp-hint {
-    font-size: 0.76rem;
-    opacity: 0.5;
-    font-weight: 400;
-    text-transform: none;
-    letter-spacing: 0;
-}
-
+/* ── 响应式 ── */
 @media (max-width: 480px) {
     .tp-style-grid { grid-template-columns: repeat(3, 1fr); }
+    .tp-result-actions { gap: 4px; }
+    .tp-result-actions .tp-btn { padding: 4px 8px; font-size: 0.76rem; }
 }
