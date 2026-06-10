@@ -1,5 +1,5 @@
 /* ══════════════════════════════════════════════
-   文字润色工坊 · SillyTavern Extension v2.2
+   文字润色工坊 · SillyTavern Extension v2.1
    ══════════════════════════════════════════════ */
 
 /* ── 弹窗整体包装 ── */
@@ -187,7 +187,6 @@
 .tp-api-status.connecting { color: #f0ad4e; border-color: rgba(240,173,78,0.5); }
 .tp-api-status.ok         { color: #5cb85c; border-color: rgba(92,184,92,0.5); }
 .tp-api-status.err        { color: #e74c3c; border-color: rgba(231,76,60,0.5); }
-.tp-api-status.manual     { color: #f0ad4e; border-color: rgba(240,173,78,0.5); }
 
 /* ── 风格芯片 ── */
 .tp-style-grid {
@@ -480,32 +479,60 @@
     .tp-result-actions .tp-btn { padding: 4px 8px; font-size: 0.76rem; }
 }
 
+/* ══ v2.3 新增样式 ══════════════════════════════════════════════════════════ */
 
-/* v2.3: history item styles */
-.tp-history-item {
-    border: 1px solid var(--SmartThemeBorderColor, rgba(255,255,255,0.1));
-    border-radius: 8px;
-    padding: 10px 12px;
-    margin-bottom: 8px;
-    cursor: pointer;
-    transition: background 0.15s;
-}
-.tp-history-item:last-child { margin-bottom: 0; }
-.tp-history-item:hover { background: rgba(255,255,255,0.05); }
-.tp-history-meta {
+/* ── 润色历史 ── */
+.tp-history-toggle {
     display: flex;
     align-items: center;
+    justify-content: space-between;
+    cursor: pointer;
+    user-select: none;
+    padding: 2px 0;
+}
+.tp-history-toggle:hover { opacity: 0.85; }
+.tp-history-arrow {
+    font-size: 0.75rem;
+    opacity: 0.5;
+    transition: transform 0.2s;
+    flex-shrink: 0;
+}
+.tp-hist-item {
+    border: 1px solid var(--SmartThemeBorderColor);
+    border-radius: 6px;
+    padding: 8px 10px;
+    margin-bottom: 8px;
+    background: var(--SmartThemeInputBg, transparent);
+}
+.tp-hist-item:last-child { margin-bottom: 0; }
+.tp-hist-meta {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 5px;
     gap: 6px;
     flex-wrap: wrap;
-    margin-bottom: 6px;
 }
-.tp-history-time { font-size: 0.76rem; opacity: 0.55; flex-shrink: 0; }
-.tp-history-preview {
+.tp-hist-preview {
     font-size: 0.82rem;
-    opacity: 0.75;
+    opacity: 0.65;
     line-height: 1.5;
+    white-space: nowrap;
     overflow: hidden;
-    display: -webkit-box;
-    -webkit-line-clamp: 2;
-    -webkit-box-orient: vertical;
+    text-overflow: ellipsis;
 }
+
+/* ── API 状态 manual ── */
+.tp-api-status.manual { color: #f0ad4e; border-color: rgba(240,173,78,0.5); }
+
+/* ── 主题芯片（复用 preset-tag 样式，单独加 active 态） ── */
+.tp-theme-chip.active {
+    border-color: var(--SmartThemeQuoteColor);
+    color: var(--SmartThemeQuoteColor);
+    background: rgba(128,128,255,0.10);
+    background: color-mix(in srgb, var(--SmartThemeQuoteColor) 10%, transparent);
+}
+
+/* ── history-card 标题去掉 ::before（由 toggle 控制布局）── */
+#tp-history-card .tp-card-title::before { display: none; }
+#tp-history-card .tp-card-title { margin-bottom: 0; }
